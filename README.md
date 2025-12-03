@@ -186,6 +186,15 @@ await db.collection('users').doc('user-1').set({ name: 'Alice' });
 unregister();
 ```
 
+## Examples
+
+See the [examples](examples/) directory for targeted, single-concept examples covering:
+
+- Firestore CRUD, queries, transactions, triggers
+- Cloud Storage operations
+- Cloud Tasks creation and assertions
+- Dependency injection patterns
+
 ## Contributing
 
 This package includes [integration tests](src/__tests__/integration) that verify stub behavior matches real Firebase. See [CONTRIBUTING.md](CONTRIBUTING.md) for setup instructions.
