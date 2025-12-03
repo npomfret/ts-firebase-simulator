@@ -2,6 +2,15 @@
 
 An in-memory, TypeScript simulator for _some_ firebase services - for use in unit tests.
 
+## Examples
+
+The easiest way to understand it to look at the [examples](examples/) directory for targeted, single-concept code samples covering:
+
+- Firestore CRUD, queries, transactions, triggers
+- Cloud Storage operations
+- Cloud Tasks creation and assertions
+- Dependency injection patterns
+
 ## The Problem
 
 Firebase doesn't provide TypeScript interfaces for its classes, making it difficult to write unit tests that swap real implementations for test doubles. This package aims to solve that problem.
@@ -185,15 +194,6 @@ await db.collection('users').doc('user-1').set({ name: 'Alice' });
 
 unregister();
 ```
-
-## Examples
-
-See the [examples](examples/) directory for targeted, single-concept examples covering:
-
-- Firestore CRUD, queries, transactions, triggers
-- Cloud Storage operations
-- Cloud Tasks creation and assertions
-- Dependency injection patterns
 
 ## Contributing
 
