@@ -12,7 +12,7 @@
  * 3. Queue path generation is consistent
  */
 
-import { createCloudTasksClient, type ICloudTasksClient, StubCloudTasksClient } from '@billsplit-wl/firebase-simulator';
+import { createCloudTasksClient, type ICloudTasksClient, StubCloudTasksClient } from 'ts-firebase-simulator';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 describe('Cloud Tasks Client Compatibility - Integration Test', () => {

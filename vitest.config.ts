@@ -1,6 +1,12 @@
 import { defineConfig } from 'vitest/config';
+import * as path from 'path';
 
 export default defineConfig({
+    resolve: {
+        alias: {
+            'ts-firebase-simulator': path.resolve(__dirname, './src/index.ts'),
+        },
+    },
     test: {
         threads: false,
         maxConcurrency: 1,

@@ -19,7 +19,7 @@ import {
     StubFirestoreDatabase,
     Timestamp,
     type TriggerDefinition,
-} from '@billsplit-wl/firebase-simulator';
+} from 'ts-firebase-simulator';
 import * as fs from 'fs';
 import { cert, getApps, initializeApp } from 'firebase-admin/app';
 import { getFirestore as getAdminFirestore } from 'firebase-admin/firestore';

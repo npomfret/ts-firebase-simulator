@@ -26,7 +26,7 @@ This package provides:
 3. **Wrapper factories** (`createFirestoreDatabase`, `createCloudTasksClient`, `createStorage`) that adapt real Firebase instances to the interfaces
 
 ```typescript
-import { IFirestoreDatabase, StubFirestoreDatabase, createFirestoreDatabase } from '@billsplit-wl/firebase-simulator';
+import { IFirestoreDatabase, StubFirestoreDatabase, createFirestoreDatabase } from 'ts-firebase-simulator';
 
 class MyService {
     constructor(private db: IFirestoreDatabase) {} // Now accepts both real and stub
@@ -44,7 +44,7 @@ const service = new MyService(stubDb);
 ## Installation
 
 ```bash
-npm install @billsplit-wl/firebase-simulator
+npm install ts-firebase-simulator
 ```
 
 ## Quick Start
@@ -55,7 +55,7 @@ import {
     StubFirestoreDatabase,
     createFirestoreDatabase,
     Timestamp,
-} from '@billsplit-wl/firebase-simulator';
+} from 'ts-firebase-simulator';
 
 // In unit tests - fast, in-memory, no Firebase connection
 const db = new StubFirestoreDatabase();
@@ -155,7 +155,7 @@ Wrap real Firebase instances to use the interfaces:
 import { getFirestore } from 'firebase-admin/firestore';
 import { getStorage } from 'firebase-admin/storage';
 import { CloudTasksClient } from '@google-cloud/tasks';
-import { createFirestoreDatabase, createCloudTasksClient, createStorage } from '@billsplit-wl/firebase-simulator';
+import { createFirestoreDatabase, createCloudTasksClient, createStorage } from 'ts-firebase-simulator';
 
 // Firestore
 const db: IFirestoreDatabase = createFirestoreDatabase(getFirestore());
