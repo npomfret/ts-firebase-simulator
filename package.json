@@ -1,0 +1,61 @@
+{
+  "name": "ts-firebase-simulator",
+  "version": "0.1.0",
+  "description": "TypeScript-first in-memory Firebase stubs for unit testing",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "require": "./dist/index.cjs",
+      "import": "./dist/index.mjs"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/npomfret/ts-firebase-simulator.git"
+  },
+  "keywords": [
+    "firebase",
+    "firestore",
+    "testing",
+    "mock",
+    "stub",
+    "typescript",
+    "unit-testing"
+  ],
+  "author": "Nick Pomfret",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/npomfret/ts-firebase-simulator/issues"
+  },
+  "homepage": "https://github.com/npomfret/ts-firebase-simulator#readme",
+  "scripts": {
+    "build": "npm run build:check && tsup",
+    "build:check": "tsc --noEmit",
+    "watch": "tsup --watch",
+    "clean": "rm -rf dist",
+    "super-clean": "npm run clean && rm -rf node_modules",
+    "test": "vitest run",
+    "test:unit": "vitest run src/__tests__/unit",
+    "test:integration": "vitest run src/__tests__/integration",
+    "indexes:deploy": "npx tsx scripts/deploy-indexes.ts",
+    "test:wipe-data": "npx tsx scripts/wipe-test-data.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.14",
+    "tsup": "^8.0.0",
+    "typescript": "^5.8.3",
+    "vitest": "^3.2.4"
+  },
+  "dependencies": {
+    "@google-cloud/tasks": "^6.2.1",
+    "firebase-admin": "^13.5.0",
+    "firebase-functions": "^6.4.0"
+  }
+}
