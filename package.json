@@ -1,6 +1,6 @@
 {
   "name": "ts-firebase-simulator",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "TypeScript-first in-memory Firebase stubs for unit testing",
   "type": "module",
   "main": "./dist/index.cjs",
@@ -51,16 +51,19 @@
     "format": "dprint fmt",
     "format:check": "dprint check"
   },
+  "peerDependencies": {
+    "@google-cloud/tasks": ">=6.0.0",
+    "firebase-admin": ">=13.0.0",
+    "firebase-functions": ">=6.0.0"
+  },
   "devDependencies": {
+    "@google-cloud/tasks": "^6.2.1",
     "@types/node": "^24.0.14",
     "dprint": "^0.50.2",
+    "firebase-admin": "^13.5.0",
+    "firebase-functions": "^6.4.0",
     "tsup": "^8.0.0",
     "typescript": "^5.8.3",
     "vitest": "^3.2.4"
-  },
-  "dependencies": {
-    "@google-cloud/tasks": "^6.2.1",
-    "firebase-admin": "^13.5.0",
-    "firebase-functions": "^6.4.0"
   }
 }
