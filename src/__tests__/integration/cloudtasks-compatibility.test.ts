@@ -4,12 +4,13 @@
  * Verifies that CloudTasksClientWrapper and StubCloudTasksClient implement
  * the ICloudTasksClient interface correctly.
  *
- * Note: Unlike Firestore, Cloud Tasks does not have a local emulator, so we
- * cannot test against real Cloud Tasks API without authentication. Instead,
- * this test verifies:
- * 1. Both implementations follow the same interface contract
- * 2. StubCloudTasksClient behavior is correct and testable
- * 3. Queue path generation is consistent
+ * Note: Cloud Tasks does NOT have an official Firebase emulator, so this test:
+ * 1. Tests interface contract (queue path generation) for both real wrapper and stub
+ * 2. Tests StubCloudTasksClient behavior for task creation and tracking
+ * 3. Does NOT actually call the Cloud Tasks API (would require authentication)
+ *
+ * When running with `npm run test:with-emulator`, these tests still run but
+ * don't interact with any emulator (since none exists for Cloud Tasks).
  */
 
 import { createCloudTasksClient, type ICloudTasksClient, StubCloudTasksClient } from 'ts-firebase-simulator';

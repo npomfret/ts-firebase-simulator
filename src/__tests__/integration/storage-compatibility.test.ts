@@ -1,14 +1,16 @@
 /**
- * Integration Test: StubStorage vs Real Firebase Storage
+ * Integration Test: StubStorage vs Emulator vs Real Firebase Storage
  *
  * Verifies that StubStorage mirrors real Firebase Storage behaviour by
- * executing identical operations against both implementations.
+ * executing identical operations against all three implementations:
+ * 1. Stub (in-memory) - always runs
+ * 2. Emulator - runs when FIREBASE_STORAGE_EMULATOR_HOST is set
+ * 3. Real Firebase - runs when service account is available
  *
  * Configuration:
- * - Place a service account JSON file at: service-account-key.json
- * - Or set GOOGLE_APPLICATION_CREDENTIALS environment variable
- * - The service account file is gitignored
- * - Your Firebase project must have a Storage bucket created
+ * - Stub: No configuration needed
+ * - Emulator: Run `firebase emulators:start` or use `npm run test:with-emulator`
+ * - Real: Place service-account-key.json in project root, and ensure Storage bucket exists
  */
 
 import { type App, cert, getApps, initializeApp } from 'firebase-admin/app';
@@ -18,7 +20,13 @@ import * as path from 'path';
 import { createStorage, type IStorage, type IStorageBucket, StubStorage } from 'ts-firebase-simulator';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
-function getServiceAccountPath(): string {
+type TestMode = 'stub' | 'emulator' | 'real';
+
+function isEmulatorAvailable(): boolean {
+    return !!process.env.FIREBASE_STORAGE_EMULATOR_HOST;
+}
+
+function getServiceAccountPath(): string | null {
     if (process.env.GOOGLE_APPLICATION_CREDENTIALS) {
         return process.env.GOOGLE_APPLICATION_CREDENTIALS;
     }
@@ -26,11 +34,11 @@ function getServiceAccountPath(): string {
     if (fs.existsSync(localPath)) {
         return localPath;
     }
-    throw new Error(
-        'No service account found. Either:\n'
-            + '  1. Place service-account-key.json in packages/firebase-simulator/\n'
-            + '  2. Set GOOGLE_APPLICATION_CREDENTIALS environment variable',
-    );
+    return null;
+}
+
+function isRealFirebaseAvailable(): boolean {
+    return getServiceAccountPath() !== null;
 }
 
 function getStorageBucket(projectId: string): string {
@@ -45,39 +53,65 @@ interface ServiceAccount {
     project_id: string;
 }
 
-let firebaseApp: App;
-let serviceAccount: ServiceAccount;
+function initializeFirebaseApp(appName: string, useEmulator: boolean): App {
+    const existingApp = getApps().find((app) => app.name === appName);
+    if (existingApp) return existingApp;
 
-function ensureFirebaseApp(): App {
-    if (getApps().length === 0) {
+    if (useEmulator) {
+        // For emulator, we just need a project ID - no credentials required
+        return initializeApp({
+            projectId: 'demo-test-project',
+            storageBucket: 'demo-test-project.appspot.com',
+        }, appName);
+    } else {
         const serviceAccountPath = getServiceAccountPath();
-        serviceAccount = JSON.parse(fs.readFileSync(serviceAccountPath, 'utf8'));
-        firebaseApp = initializeApp({
+        if (!serviceAccountPath) {
+            throw new Error('No service account found for real Firebase');
+        }
+        const serviceAccount: ServiceAccount = JSON.parse(fs.readFileSync(serviceAccountPath, 'utf8'));
+        return initializeApp({
             credential: cert(serviceAccount as any),
             projectId: serviceAccount.project_id,
             storageBucket: getStorageBucket(serviceAccount.project_id),
-        });
+        }, appName);
     }
-    return firebaseApp ?? getApps()[0];
+}
+
+function getStorageForMode(mode: 'emulator' | 'real'): ReturnType<typeof getStorage> {
+    const appName = mode === 'emulator' ? 'storage-emulator-app' : 'storage-real-app';
+    const app = initializeFirebaseApp(appName, mode === 'emulator');
+    return getStorage(app);
 }
 
 describe('Storage Stub Compatibility - Integration Test', () => {
-    let realStorage: IStorage;
     let stubStorage: StubStorage;
-    let realBucket: IStorageBucket;
     let stubBucket: IStorageBucket;
+    let emulatorStorage: IStorage | null = null;
+    let emulatorBucket: IStorageBucket | null = null;
+    let realStorage: IStorage | null = null;
+    let realBucket: IStorageBucket | null = null;
     const testPathPrefix = `compatibility-test-${Date.now()}`;
 
+    // Track which modes are available
+    const emulatorAvailable = isEmulatorAvailable();
+    const realFirebaseAvailable = isRealFirebaseAvailable();
+
     beforeAll(() => {
-        ensureFirebaseApp();
+        console.log(`Storage test modes: stub=yes, emulator=${emulatorAvailable ? 'yes' : 'no'}, real=${realFirebaseAvailable ? 'yes' : 'no'}`);
+
+        if (emulatorAvailable) {
+            emulatorStorage = createStorage(getStorageForMode('emulator'));
+            emulatorBucket = emulatorStorage.bucket();
+        }
+
+        if (realFirebaseAvailable) {
+            realStorage = createStorage(getStorageForMode('real'));
+            realBucket = realStorage.bucket();
+        }
     });
 
     beforeEach(() => {
-        const app = ensureFirebaseApp();
-        realStorage = createStorage(getStorage(app));
         stubStorage = new StubStorage();
-
-        realBucket = realStorage.bucket();
         stubBucket = stubStorage.bucket();
     });
 
@@ -86,59 +120,75 @@ describe('Storage Stub Compatibility - Integration Test', () => {
     });
 
     afterAll(async () => {
-        // Clean up test files from real storage
-        const app = ensureFirebaseApp();
-        const storage = getStorage(app);
-        const bucket = storage.bucket();
+        // Clean up test files from emulator and real storage
+        const cleanups: Array<{ storage: ReturnType<typeof getStorage>; mode: string }> = [];
 
-        try {
-            const [files] = await bucket.getFiles({ prefix: testPathPrefix });
-            for (const file of files) {
-                await file.delete().catch(() => {
-                    // Ignore errors for files that don't exist
-                });
+        if (emulatorAvailable) {
+            cleanups.push({ storage: getStorageForMode('emulator'), mode: 'emulator' });
+        }
+        if (realFirebaseAvailable) {
+            cleanups.push({ storage: getStorageForMode('real'), mode: 'real' });
+        }
+
+        for (const { storage } of cleanups) {
+            const bucket = storage.bucket();
+            try {
+                const [files] = await bucket.getFiles({ prefix: testPathPrefix });
+                for (const file of files) {
+                    await file.delete().catch(() => {
+                        // Ignore errors for files that don't exist
+                    });
+                }
+            } catch {
+                // Ignore cleanup errors
             }
-        } catch {
-            // Ignore cleanup errors
         }
     });
 
-    async function testBothImplementations(
+    async function testAllImplementations(
         testName: string,
-        testFn: (bucket: IStorageBucket, isStub: boolean) => Promise<void>,
+        testFn: (bucket: IStorageBucket, mode: TestMode, storage: StubStorage | null) => Promise<void>,
     ) {
-        await testFn(realBucket, false);
-        await testFn(stubBucket, true);
+        // 1. Stub (always runs)
+        await testFn(stubBucket, 'stub', stubStorage);
+
+        // 2. Emulator (if available)
+        if (emulatorBucket) {
+            await testFn(emulatorBucket, 'emulator', null);
+        }
+
+        // 3. Real Firebase (if available)
+        if (realBucket) {
+            await testFn(realBucket, 'real', null);
+        }
     }
 
     describe('Basic File Operations', () => {
         it('should save and retrieve files identically', async () => {
-            await testBothImplementations('save file', async (bucket, isStub) => {
-                const filePath = `${testPathPrefix}/test-file-${isStub ? 'stub' : 'real'}.txt`;
+            await testAllImplementations('save file', async (bucket, mode, storage) => {
+                const filePath = `${testPathPrefix}/test-file-${mode}.txt`;
                 const content = 'Hello, World!';
 
                 const file = bucket.file(filePath);
                 await file.save(content);
 
-                // For real storage, verify by downloading
-                if (!isStub) {
-                    const app = ensureFirebaseApp();
-                    const storage = getStorage(app);
-                    const realFile = storage.bucket().file(filePath);
-                    const [downloaded] = await realFile.download();
-                    expect(downloaded.toString(), `File content (real)`).toBe(content);
+                // For stub, use internal API; for emulator/real, use Firebase API
+                if (mode === 'stub' && storage) {
+                    const snapshot = storage.getFile(bucket.name, filePath);
+                    expect(snapshot, `File exists (${mode})`).toBeDefined();
+                    expect(snapshot?.content.toString(), `File content (${mode})`).toBe(content);
                 } else {
-                    // For stub, use internal API
-                    const snapshot = stubStorage.getFile(stubBucket.name, filePath);
-                    expect(snapshot, `File exists (stub)`).toBeDefined();
-                    expect(snapshot?.content.toString(), `File content (stub)`).toBe(content);
+                    const firebaseStorage = getStorageForMode(mode as 'emulator' | 'real');
+                    const realFile = firebaseStorage.bucket().file(filePath);
+                    const [downloaded] = await realFile.download();
+                    expect(downloaded.toString(), `File content (${mode})`).toBe(content);
                 }
             });
         });
 
         it('should save files with metadata identically', async () => {
-            await testBothImplementations('save with metadata', async (bucket, isStub) => {
-                const filePath = `${testPathPrefix}/metadata-file-${isStub ? 'stub' : 'real'}.json`;
+            await testAllImplementations('save with metadata', async (bucket, mode, storage) => {
+                const filePath = `${testPathPrefix}/metadata-file-${mode}.json`;
                 const content = JSON.stringify({ test: 'data' });
                 const metadata = {
                     contentType: 'application/json',
@@ -148,67 +198,64 @@ describe('Storage Stub Compatibility - Integration Test', () => {
                 const file = bucket.file(filePath);
                 await file.save(content, { metadata });
 
-                if (!isStub) {
-                    const app = ensureFirebaseApp();
-                    const storage = getStorage(app);
-                    const realFile = storage.bucket().file(filePath);
-                    const [fileMetadata] = await realFile.getMetadata();
-                    expect(fileMetadata.contentType, `Content type (real)`).toBe('application/json');
-                    expect(fileMetadata.cacheControl, `Cache control (real)`).toBe('public, max-age=3600');
+                if (mode === 'stub' && storage) {
+                    const snapshot = storage.getFile(bucket.name, filePath);
+                    expect(snapshot?.metadata?.contentType, `Content type (${mode})`).toBe('application/json');
+                    expect(snapshot?.metadata?.cacheControl, `Cache control (${mode})`).toBe('public, max-age=3600');
                 } else {
-                    const snapshot = stubStorage.getFile(stubBucket.name, filePath);
-                    expect(snapshot?.metadata?.contentType, `Content type (stub)`).toBe('application/json');
-                    expect(snapshot?.metadata?.cacheControl, `Cache control (stub)`).toBe('public, max-age=3600');
+                    const firebaseStorage = getStorageForMode(mode as 'emulator' | 'real');
+                    const realFile = firebaseStorage.bucket().file(filePath);
+                    const [fileMetadata] = await realFile.getMetadata();
+                    expect(fileMetadata.contentType, `Content type (${mode})`).toBe('application/json');
+                    expect(fileMetadata.cacheControl, `Cache control (${mode})`).toBe('public, max-age=3600');
                 }
             });
         });
 
         it('should delete files identically', async () => {
-            await testBothImplementations('delete file', async (bucket, isStub) => {
-                const filePath = `${testPathPrefix}/delete-file-${isStub ? 'stub' : 'real'}.txt`;
+            await testAllImplementations('delete file', async (bucket, mode, storage) => {
+                const filePath = `${testPathPrefix}/delete-file-${mode}.txt`;
                 const content = 'To be deleted';
 
                 const file = bucket.file(filePath);
                 await file.save(content);
                 await file.delete();
 
-                if (!isStub) {
-                    const app = ensureFirebaseApp();
-                    const storage = getStorage(app);
-                    const realFile = storage.bucket().file(filePath);
-                    const [exists] = await realFile.exists();
-                    expect(exists, `File deleted (real)`).toBe(false);
+                if (mode === 'stub' && storage) {
+                    const snapshot = storage.getFile(bucket.name, filePath);
+                    expect(snapshot, `File deleted (${mode})`).toBeUndefined();
                 } else {
-                    const snapshot = stubStorage.getFile(stubBucket.name, filePath);
-                    expect(snapshot, `File deleted (stub)`).toBeUndefined();
+                    const firebaseStorage = getStorageForMode(mode as 'emulator' | 'real');
+                    const realFile = firebaseStorage.bucket().file(filePath);
+                    const [exists] = await realFile.exists();
+                    expect(exists, `File deleted (${mode})`).toBe(false);
                 }
             });
         });
 
         it('should handle binary content identically', async () => {
-            await testBothImplementations('binary content', async (bucket, isStub) => {
-                const filePath = `${testPathPrefix}/binary-file-${isStub ? 'stub' : 'real'}.bin`;
+            await testAllImplementations('binary content', async (bucket, mode, storage) => {
+                const filePath = `${testPathPrefix}/binary-file-${mode}.bin`;
                 const content = Buffer.from([0x00, 0x01, 0x02, 0xff, 0xfe, 0xfd]);
 
                 const file = bucket.file(filePath);
                 await file.save(content);
 
-                if (!isStub) {
-                    const app = ensureFirebaseApp();
-                    const storage = getStorage(app);
-                    const realFile = storage.bucket().file(filePath);
-                    const [downloaded] = await realFile.download();
-                    expect(Buffer.compare(downloaded, content), `Binary content matches (real)`).toBe(0);
+                if (mode === 'stub' && storage) {
+                    const snapshot = storage.getFile(bucket.name, filePath);
+                    expect(Buffer.compare(snapshot!.content, content), `Binary content matches (${mode})`).toBe(0);
                 } else {
-                    const snapshot = stubStorage.getFile(stubBucket.name, filePath);
-                    expect(Buffer.compare(snapshot!.content, content), `Binary content matches (stub)`).toBe(0);
+                    const firebaseStorage = getStorageForMode(mode as 'emulator' | 'real');
+                    const realFile = firebaseStorage.bucket().file(filePath);
+                    const [downloaded] = await realFile.download();
+                    expect(Buffer.compare(downloaded, content), `Binary content matches (${mode})`).toBe(0);
                 }
             });
         });
 
         it('should overwrite existing files identically', async () => {
-            await testBothImplementations('overwrite file', async (bucket, isStub) => {
-                const filePath = `${testPathPrefix}/overwrite-file-${isStub ? 'stub' : 'real'}.txt`;
+            await testAllImplementations('overwrite file', async (bucket, mode, storage) => {
+                const filePath = `${testPathPrefix}/overwrite-file-${mode}.txt`;
                 const originalContent = 'Original content';
                 const newContent = 'New content';
 
@@ -216,15 +263,14 @@ describe('Storage Stub Compatibility - Integration Test', () => {
                 await file.save(originalContent);
                 await file.save(newContent);
 
-                if (!isStub) {
-                    const app = ensureFirebaseApp();
-                    const storage = getStorage(app);
-                    const realFile = storage.bucket().file(filePath);
-                    const [downloaded] = await realFile.download();
-                    expect(downloaded.toString(), `Overwritten content (real)`).toBe(newContent);
+                if (mode === 'stub' && storage) {
+                    const snapshot = storage.getFile(bucket.name, filePath);
+                    expect(snapshot?.content.toString(), `Overwritten content (${mode})`).toBe(newContent);
                 } else {
-                    const snapshot = stubStorage.getFile(stubBucket.name, filePath);
-                    expect(snapshot?.content.toString(), `Overwritten content (stub)`).toBe(newContent);
+                    const firebaseStorage = getStorageForMode(mode as 'emulator' | 'real');
+                    const realFile = firebaseStorage.bucket().file(filePath);
+                    const [downloaded] = await realFile.download();
+                    expect(downloaded.toString(), `Overwritten content (${mode})`).toBe(newContent);
                 }
             });
         });
@@ -232,22 +278,21 @@ describe('Storage Stub Compatibility - Integration Test', () => {
 
     describe('Path Handling', () => {
         it('should handle nested paths identically', async () => {
-            await testBothImplementations('nested paths', async (bucket, isStub) => {
-                const filePath = `${testPathPrefix}/nested/deep/path/file-${isStub ? 'stub' : 'real'}.txt`;
+            await testAllImplementations('nested paths', async (bucket, mode, storage) => {
+                const filePath = `${testPathPrefix}/nested/deep/path/file-${mode}.txt`;
                 const content = 'Nested file content';
 
                 const file = bucket.file(filePath);
                 await file.save(content);
 
-                if (!isStub) {
-                    const app = ensureFirebaseApp();
-                    const storage = getStorage(app);
-                    const realFile = storage.bucket().file(filePath);
-                    const [downloaded] = await realFile.download();
-                    expect(downloaded.toString(), `Nested file content (real)`).toBe(content);
+                if (mode === 'stub' && storage) {
+                    const snapshot = storage.getFile(bucket.name, filePath);
+                    expect(snapshot?.content.toString(), `Nested file content (${mode})`).toBe(content);
                 } else {
-                    const snapshot = stubStorage.getFile(stubBucket.name, filePath);
-                    expect(snapshot?.content.toString(), `Nested file content (stub)`).toBe(content);
+                    const firebaseStorage = getStorageForMode(mode as 'emulator' | 'real');
+                    const realFile = firebaseStorage.bucket().file(filePath);
+                    const [downloaded] = await realFile.download();
+                    expect(downloaded.toString(), `Nested file content (${mode})`).toBe(content);
                 }
             });
         });
@@ -271,19 +316,19 @@ describe('Storage Stub Compatibility - Integration Test', () => {
 
     describe('Bucket Operations', () => {
         it('should return correct bucket name', async () => {
-            await testBothImplementations('bucket name', async (bucket, isStub) => {
-                expect(bucket.name, `Bucket name (${isStub ? 'stub' : 'real'})`).toBeDefined();
-                expect(typeof bucket.name, `Bucket name type (${isStub ? 'stub' : 'real'})`).toBe('string');
-                expect(bucket.name.length, `Bucket name not empty (${isStub ? 'stub' : 'real'})`).toBeGreaterThan(0);
+            await testAllImplementations('bucket name', async (bucket, mode) => {
+                expect(bucket.name, `Bucket name (${mode})`).toBeDefined();
+                expect(typeof bucket.name, `Bucket name type (${mode})`).toBe('string');
+                expect(bucket.name.length, `Bucket name not empty (${mode})`).toBeGreaterThan(0);
             });
         });
 
         it('should handle multiple files in same bucket', async () => {
-            await testBothImplementations('multiple files', async (bucket, isStub) => {
+            await testAllImplementations('multiple files', async (bucket, mode, storage) => {
                 const files = [
-                    { path: `${testPathPrefix}/multi-1-${isStub ? 'stub' : 'real'}.txt`, content: 'File 1' },
-                    { path: `${testPathPrefix}/multi-2-${isStub ? 'stub' : 'real'}.txt`, content: 'File 2' },
-                    { path: `${testPathPrefix}/multi-3-${isStub ? 'stub' : 'real'}.txt`, content: 'File 3' },
+                    { path: `${testPathPrefix}/multi-1-${mode}.txt`, content: 'File 1' },
+                    { path: `${testPathPrefix}/multi-2-${mode}.txt`, content: 'File 2' },
+                    { path: `${testPathPrefix}/multi-3-${mode}.txt`, content: 'File 3' },
                 ];
 
                 for (const { path: filePath, content } of files) {
@@ -292,15 +337,14 @@ describe('Storage Stub Compatibility - Integration Test', () => {
 
                 // Verify all files exist
                 for (const { path: filePath, content } of files) {
-                    if (!isStub) {
-                        const app = ensureFirebaseApp();
-                        const storage = getStorage(app);
-                        const realFile = storage.bucket().file(filePath);
-                        const [downloaded] = await realFile.download();
-                        expect(downloaded.toString(), `File ${filePath} content (real)`).toBe(content);
+                    if (mode === 'stub' && storage) {
+                        const snapshot = storage.getFile(bucket.name, filePath);
+                        expect(snapshot?.content.toString(), `File ${filePath} content (${mode})`).toBe(content);
                     } else {
-                        const snapshot = stubStorage.getFile(stubBucket.name, filePath);
-                        expect(snapshot?.content.toString(), `File ${filePath} content (stub)`).toBe(content);
+                        const firebaseStorage = getStorageForMode(mode as 'emulator' | 'real');
+                        const realFile = firebaseStorage.bucket().file(filePath);
+                        const [downloaded] = await realFile.download();
+                        expect(downloaded.toString(), `File ${filePath} content (${mode})`).toBe(content);
                     }
                 }
             });
@@ -309,8 +353,8 @@ describe('Storage Stub Compatibility - Integration Test', () => {
 
     describe('Make Public', () => {
         it('should make files public without error', async () => {
-            await testBothImplementations('make public', async (bucket, isStub) => {
-                const filePath = `${testPathPrefix}/public-file-${isStub ? 'stub' : 'real'}.txt`;
+            await testAllImplementations('make public', async (bucket, mode, storage) => {
+                const filePath = `${testPathPrefix}/public-file-${mode}.txt`;
                 const content = 'Public content';
 
                 const file = bucket.file(filePath);
@@ -319,9 +363,9 @@ describe('Storage Stub Compatibility - Integration Test', () => {
                 // makePublic should not throw
                 await expect(file.makePublic()).resolves.not.toThrow();
 
-                if (isStub) {
-                    const snapshot = stubStorage.getFile(stubBucket.name, filePath);
-                    expect(snapshot?.public, `File marked public (stub)`).toBe(true);
+                if (mode === 'stub' && storage) {
+                    const snapshot = storage.getFile(bucket.name, filePath);
+                    expect(snapshot?.public, `File marked public (${mode})`).toBe(true);
                 }
             });
         });

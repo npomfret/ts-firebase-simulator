@@ -44,6 +44,8 @@
     "test": "vitest run",
     "test:unit": "vitest run src/__tests__/unit",
     "test:integration": "vitest run src/__tests__/integration",
+    "emulators:start": "firebase emulators:start",
+    "test:with-emulator": "firebase emulators:exec 'npm run test:integration'",
     "indexes:deploy": "npx tsx scripts/deploy-indexes.ts",
     "test:wipe-data": "npx tsx scripts/wipe-test-data.ts",
     "format": "dprint fmt",

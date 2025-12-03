@@ -2,11 +2,22 @@
 
 This document covers how to set up and run the integration tests for this package. These tests verify that the stub implementations behave identically to real Firebase services.
 
+## Test Modes
+
+Integration tests run against three implementations in sequence:
+
+| Mode | Description | Requirements |
+|------|-------------|--------------|
+| **Stub** | In-memory implementation | None (always runs) |
+| **Emulator** | Firebase Local Emulator Suite | Firebase CLI + Java JDK 11+ |
+| **Real** | Production Firebase | Service account key |
+
 ## Prerequisites
 
 - **Node.js** >= 18
 - **npm** >= 9
 - **Firebase CLI**: `npm install -g firebase-tools`
+- **Java JDK** >= 11 (for Firestore emulator)
 - **gcloud CLI** (optional, for IAM setup): https://cloud.google.com/sdk/docs/install
 
 ## Setup
@@ -69,8 +80,57 @@ The required indexes are defined in [`firestore.indexes.json`](firestore.indexes
 ### 7. Run Tests
 
 ```bash
+# Run integration tests (stub + real Firebase if service account exists)
+npm run test:integration
+
+# Run with Firebase emulator (stub + emulator + real if service account exists)
+npm run test:with-emulator
+```
+
+## Running with the Emulator
+
+To run integration tests against the Firebase Local Emulator Suite:
+
+### Quick Start
+
+```bash
+# Start emulators and run tests (recommended)
+npm run test:with-emulator
+```
+
+This command:
+1. Starts the Firestore and Storage emulators
+2. Sets the required environment variables automatically
+3. Runs integration tests against all available modes
+4. Shuts down emulators when tests complete
+
+### Manual Emulator Mode
+
+If you prefer to manage the emulator separately:
+
+```bash
+# Terminal 1: Start emulators
+npm run emulators:start
+
+# Terminal 2: Run tests (will detect running emulator)
 npm run test:integration
 ```
+
+### Emulator Configuration
+
+The emulators are configured in `firebase.json`:
+
+| Emulator | Port | Environment Variable |
+|----------|------|---------------------|
+| Firestore | 8080 | `FIRESTORE_EMULATOR_HOST=127.0.0.1:8080` |
+| Storage | 9199 | `FIREBASE_STORAGE_EMULATOR_HOST=127.0.0.1:9199` |
+| UI | 4000 | http://localhost:4000 |
+
+### Cloud Tasks Note
+
+Cloud Tasks does **not** have an official Firebase emulator. When running in emulator mode:
+- Firestore and Storage tests run against the emulator
+- Cloud Tasks tests continue to use the stub implementation
 
 ## Commands
 
@@ -78,7 +138,9 @@ npm run test:integration
 |---------|-------------|
 | `npm run test` | Run all tests |
 | `npm run test:unit` | Run unit tests only (no Firebase connection needed) |
-| `npm run test:integration` | Run integration tests (requires setup above) |
+| `npm run test:integration` | Run integration tests (stub + real if configured) |
+| `npm run test:with-emulator` | Run integration tests with emulators (stub + emulator + real) |
+| `npm run emulators:start` | Start Firebase emulators manually |
 | `npm run indexes:deploy` | Deploy Firestore indexes |
 | `npm run test:wipe-data` | Delete all test data from Firestore (to re-seed) |
 | `npm run build` | Build the package |

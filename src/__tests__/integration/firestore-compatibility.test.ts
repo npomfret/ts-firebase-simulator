@@ -1,13 +1,16 @@
 /**
- * Integration Test: StubFirestoreDatabase vs Real Firestore
+ * Integration Test: StubFirestoreDatabase vs Emulator vs Real Firestore
  *
  * Verifies that StubFirestoreDatabase mirrors real Firestore behaviour by
- * executing identical operations against both implementations.
+ * executing identical operations against all three implementations:
+ * 1. Stub (in-memory) - always runs
+ * 2. Emulator - runs when FIRESTORE_EMULATOR_HOST is set
+ * 3. Real Firebase - runs when service account is available
  *
  * Configuration:
- * - Place a service account JSON file at: service-account-key.json
- * - Or set GOOGLE_APPLICATION_CREDENTIALS environment variable
- * - The service account file is gitignored
+ * - Stub: No configuration needed
+ * - Emulator: Run `firebase emulators:start` or use `npm run test:with-emulator`
+ * - Real: Place service-account-key.json in project root or set GOOGLE_APPLICATION_CREDENTIALS
  */
 
 import { cert, getApps, initializeApp } from 'firebase-admin/app';
@@ -26,7 +29,13 @@ import {
 } from 'ts-firebase-simulator';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
-function getServiceAccountPath(): string {
+type TestMode = 'stub' | 'emulator' | 'real';
+
+function isEmulatorAvailable(): boolean {
+    return !!process.env.FIRESTORE_EMULATOR_HOST;
+}
+
+function getServiceAccountPath(): string | null {
     if (process.env.GOOGLE_APPLICATION_CREDENTIALS) {
         return process.env.GOOGLE_APPLICATION_CREDENTIALS;
     }
@@ -35,23 +44,38 @@ function getServiceAccountPath(): string {
     if (fs.existsSync(localPath)) {
         return localPath;
     }
-    throw new Error(
-        'No service account found. Either:\n'
-            + '  1. Place service-account-key.json in packages/firebase-simulator/\n'
-            + '  2. Set GOOGLE_APPLICATION_CREDENTIALS environment variable',
-    );
+    return null;
 }
 
-function ensureFirestore() {
-    if (getApps().length === 0) {
+function isRealFirebaseAvailable(): boolean {
+    return getServiceAccountPath() !== null;
+}
+
+function initializeFirebaseApp(appName: string, useEmulator: boolean): void {
+    const existingApp = getApps().find((app) => app.name === appName);
+    if (existingApp) return;
+
+    if (useEmulator) {
+        // For emulator, we just need a project ID - no credentials required
+        initializeApp({ projectId: 'demo-test-project' }, appName);
+    } else {
         const serviceAccountPath = getServiceAccountPath();
+        if (!serviceAccountPath) {
+            throw new Error('No service account found for real Firebase');
+        }
         const serviceAccount = JSON.parse(fs.readFileSync(serviceAccountPath, 'utf8'));
         initializeApp({
             credential: cert(serviceAccount),
             projectId: serviceAccount.project_id,
-        });
+        }, appName);
     }
-    return getAdminFirestore();
+}
+
+function getFirestoreForMode(mode: 'emulator' | 'real'): ReturnType<typeof getAdminFirestore> {
+    const appName = mode === 'emulator' ? 'emulator-app' : 'real-app';
+    initializeFirebaseApp(appName, mode === 'emulator');
+    const app = getApps().find((a) => a.name === appName)!;
+    return getAdminFirestore(app);
 }
 
 // Fixed test data - seeded once, reused across tests
@@ -91,39 +115,61 @@ const COLLECTION_GROUP_DATA = [
 ];
 
 describe('Firestore Stub Compatibility - Integration Test', () => {
-    let realDb: IFirestoreDatabase;
     let stubDb: StubFirestoreDatabase;
+    let emulatorDb: IFirestoreDatabase | null = null;
+    let realDb: IFirestoreDatabase | null = null;
     // Unique prefix for tests that create/modify docs (to avoid conflicts)
     const testCollectionPrefix = `${TEST_COLLECTION}-${Date.now()}`;
 
+    // Track which modes are available
+    const emulatorAvailable = isEmulatorAvailable();
+    const realFirebaseAvailable = isRealFirebaseAvailable();
+
     beforeAll(async () => {
-        realDb = createFirestoreDatabase(ensureFirestore());
+        console.log(`Test modes: stub=yes, emulator=${emulatorAvailable ? 'yes' : 'no'}, real=${realFirebaseAvailable ? 'yes' : 'no'}`);
 
-        // Seed shared test data once - check if already exists
-        const existingDoc = await realDb.collection(TEST_COLLECTION).doc('user-1').get();
-        if (!existingDoc.exists) {
-            // Seed base collection data
-            for (const data of BASE_COLLECTION_DATA) {
-                await realDb.collection(TEST_COLLECTION).doc(data.id).set(data);
+        // Initialize emulator database if available
+        if (emulatorAvailable) {
+            emulatorDb = createFirestoreDatabase(getFirestoreForMode('emulator'));
+            // Seed emulator with test data
+            const existingDoc = await emulatorDb.collection(TEST_COLLECTION).doc('user-1').get();
+            if (!existingDoc.exists) {
+                await seedDatabase(emulatorDb);
             }
+        }
 
-            // Seed pagination data
-            for (const data of PAGINATION_DATA) {
-                await realDb.collection(TEST_PAGINATION_COLLECTION).doc(data.id).set(data);
-            }
-
-            // Seed collection group data (in separate collection to not interfere with base queries)
-            for (const parent of COLLECTION_GROUP_DATA) {
-                await realDb.collection(TEST_COLLECTION_GROUP_PARENTS).doc(parent.parentId).set({ name: `Parent ${parent.parentId}` });
-                for (const item of parent.items) {
-                    await realDb.collection(TEST_COLLECTION_GROUP_PARENTS).doc(parent.parentId).collection('items').doc(item.id).set(item);
-                }
+        // Initialize real database if available
+        if (realFirebaseAvailable) {
+            realDb = createFirestoreDatabase(getFirestoreForMode('real'));
+            // Seed real Firebase with test data (check if already exists)
+            const existingDoc = await realDb.collection(TEST_COLLECTION).doc('user-1').get();
+            if (!existingDoc.exists) {
+                await seedDatabase(realDb);
             }
         }
     });
 
+    async function seedDatabase(db: IFirestoreDatabase) {
+        // Seed base collection data
+        for (const data of BASE_COLLECTION_DATA) {
+            await db.collection(TEST_COLLECTION).doc(data.id).set(data);
+        }
+
+        // Seed pagination data
+        for (const data of PAGINATION_DATA) {
+            await db.collection(TEST_PAGINATION_COLLECTION).doc(data.id).set(data);
+        }
+
+        // Seed collection group data (in separate collection to not interfere with base queries)
+        for (const parent of COLLECTION_GROUP_DATA) {
+            await db.collection(TEST_COLLECTION_GROUP_PARENTS).doc(parent.parentId).set({ name: `Parent ${parent.parentId}` });
+            for (const item of parent.items) {
+                await db.collection(TEST_COLLECTION_GROUP_PARENTS).doc(parent.parentId).collection('items').doc(item.id).set(item);
+            }
+        }
+    }
+
     beforeEach(() => {
-        realDb = createFirestoreDatabase(ensureFirestore());
         stubDb = new StubFirestoreDatabase();
 
         // Seed stub with same data (in-memory, always fast)
@@ -145,45 +191,60 @@ describe('Firestore Stub Compatibility - Integration Test', () => {
         // Clean up docs created by individual tests
         const collectionsToClean = [testCollectionPrefix, TEST_LISTENER_QUERIES_COLLECTION];
 
-        for (const collectionName of collectionsToClean) {
-            const snapshot = await realDb.collection(collectionName).get();
-            if (snapshot.docs.length > 0) {
-                // Clean subcollections
-                for (const doc of snapshot.docs) {
-                    for (const subcollection of ['items', 'members', 'children']) {
-                        const subSnapshot = await doc.ref.collection(subcollection).get();
-                        if (subSnapshot.docs.length > 0) {
-                            const subBatch = realDb.batch();
-                            subSnapshot.docs.forEach((subDoc) => subBatch.delete(subDoc.ref));
-                            await subBatch.commit();
+        // Clean up from all available databases
+        const databasesToClean = [emulatorDb, realDb].filter((db): db is IFirestoreDatabase => db !== null);
+
+        for (const db of databasesToClean) {
+            for (const collectionName of collectionsToClean) {
+                const snapshot = await db.collection(collectionName).get();
+                if (snapshot.docs.length > 0) {
+                    // Clean subcollections
+                    for (const doc of snapshot.docs) {
+                        for (const subcollection of ['items', 'members', 'children']) {
+                            const subSnapshot = await doc.ref.collection(subcollection).get();
+                            if (subSnapshot.docs.length > 0) {
+                                const subBatch = db.batch();
+                                subSnapshot.docs.forEach((subDoc) => subBatch.delete(subDoc.ref));
+                                await subBatch.commit();
+                            }
                         }
                     }
+                    // Clean main docs
+                    const batch = db.batch();
+                    snapshot.docs.forEach((doc) => batch.delete(doc.ref));
+                    await batch.commit();
                 }
-                // Clean main docs
-                const batch = realDb.batch();
-                snapshot.docs.forEach((doc) => batch.delete(doc.ref));
-                await batch.commit();
             }
         }
 
         stubDb.clear();
     });
 
-    async function testBothImplementations(
+    async function testAllImplementations(
         testName: string,
-        testFn: (db: IFirestoreDatabase, isStub: boolean) => Promise<void>,
+        testFn: (db: IFirestoreDatabase, mode: TestMode) => Promise<void>,
     ) {
-        await testFn(realDb!, false);
-        await testFn(stubDb, true);
+        // 1. Stub (always runs)
+        await testFn(stubDb, 'stub');
+
+        // 2. Emulator (if available)
+        if (emulatorDb) {
+            await testFn(emulatorDb, 'emulator');
+        }
+
+        // 3. Real Firebase (if available)
+        if (realDb) {
+            await testFn(realDb, 'real');
+        }
     }
 
-    function waitForListenerFlush(isStub: boolean, delayMs: number = 60): Promise<void> {
-        return new Promise((resolve) => setTimeout(resolve, isStub ? 0 : delayMs));
+    function waitForListenerFlush(mode: TestMode, delayMs: number = 60): Promise<void> {
+        return new Promise((resolve) => setTimeout(resolve, mode === 'stub' ? 0 : delayMs));
     }
 
     describe('Basic Document Operations', () => {
         it('should create and read documents identically', async () => {
-            await testBothImplementations('create and read', async (db, isStub) => {
+            await testAllImplementations('create and read', async (db, mode) => {
                 const docRef = db.collection(testCollectionPrefix).doc('test-doc-1');
 
                 const testData = {
@@ -197,7 +258,7 @@ describe('Firestore Stub Compatibility - Integration Test', () => {
 
                 const snapshot = await docRef.get();
 
-                expect(snapshot.exists, `Document should exist (${isStub ? 'stub' : 'real'})`).toBe(true);
+                expect(snapshot.exists, `Document should exist (${mode})`).toBe(true);
                 expect(snapshot.id).toBe('test-doc-1');
 
                 const data = snapshot.data();
@@ -209,7 +270,7 @@ describe('Firestore Stub Compatibility - Integration Test', () => {
         });
 
         it('should update documents identically', async () => {
-            await testBothImplementations('update', async (db, isStub) => {
+            await testAllImplementations('update', async (db, mode) => {
                 const docRef = db.collection(testCollectionPrefix).doc('test-doc-2');
 
                 await docRef.set({ name: 'Original', age: 25 });
@@ -218,25 +279,25 @@ describe('Firestore Stub Compatibility - Integration Test', () => {
                 const snapshot = await docRef.get();
                 const data = snapshot.data();
 
-                expect(data?.name, `Name unchanged (${isStub ? 'stub' : 'real'})`).toBe('Original');
-                expect(data?.age, `Age updated (${isStub ? 'stub' : 'real'})`).toBe(26);
+                expect(data?.name, `Name unchanged (${mode})`).toBe('Original');
+                expect(data?.age, `Age updated (${mode})`).toBe(26);
             });
         });
 
         it('should delete documents identically', async () => {
-            await testBothImplementations('delete', async (db, isStub) => {
+            await testAllImplementations('delete', async (db, mode) => {
                 const docRef = db.collection(testCollectionPrefix).doc('test-doc-3');
 
                 await docRef.set({ name: 'To Delete' });
                 await docRef.delete();
 
                 const snapshot = await docRef.get();
-                expect(snapshot.exists, `Document deleted (${isStub ? 'stub' : 'real'})`).toBe(false);
+                expect(snapshot.exists, `Document deleted (${mode})`).toBe(false);
             });
         });
 
         it('should handle merge operations identically', async () => {
-            await testBothImplementations('merge', async (db, isStub) => {
+            await testAllImplementations('merge', async (db, mode) => {
                 const docRef = db.collection(testCollectionPrefix).doc('test-doc-4');
 
                 await docRef.set({ name: 'Original', age: 30 });
@@ -245,9 +306,9 @@ describe('Firestore Stub Compatibility - Integration Test', () => {
                 const snapshot = await docRef.get();
                 const data = snapshot.data();
 
-                expect(data?.name, `Original fields preserved (${isStub ? 'stub' : 'real'})`).toBe('Original');
-                expect(data?.age, `Merged field updated (${isStub ? 'stub' : 'real'})`).toBe(31);
-                expect(data?.city, `New merged field added (${isStub ? 'stub' : 'real'})`).toBe('LA');
+                expect(data?.name, `Original fields preserved (${mode})`).toBe('Original');
+                expect(data?.age, `Merged field updated (${mode})`).toBe(31);
+                expect(data?.city, `New merged field added (${mode})`).toBe('LA');
             });
         });
     });
@@ -256,84 +317,84 @@ describe('Firestore Stub Compatibility - Integration Test', () => {
         // Uses pre-seeded TEST_COLLECTION and TEST_PAGINATION_COLLECTION data
 
         it('should handle where queries identically', async () => {
-            await testBothImplementations('where query', async (db, isStub) => {
+            await testAllImplementations('where query', async (db, mode) => {
                 const snapshot = await db.collection(TEST_COLLECTION).where('city', '==', 'NYC').get();
 
-                expect(snapshot.size, `Query result count (${isStub ? 'stub' : 'real'})`).toBe(2);
+                expect(snapshot.size, `Query result count (${mode})`).toBe(2);
 
                 const names = snapshot.docs.map((doc) => doc.data().name).sort();
-                expect(names, `Query results match (${isStub ? 'stub' : 'real'})`).toEqual(['Alice', 'Charlie']);
+                expect(names, `Query results match (${mode})`).toEqual(['Alice', 'Charlie']);
             });
         });
 
         it('should handle range queries identically', async () => {
-            await testBothImplementations('range query', async (db, isStub) => {
+            await testAllImplementations('range query', async (db, mode) => {
                 const snapshot = await db.collection(TEST_COLLECTION).where('age', '>', 28).get();
 
-                expect(snapshot.size, `Range query count (${isStub ? 'stub' : 'real'})`).toBe(2);
+                expect(snapshot.size, `Range query count (${mode})`).toBe(2);
 
                 const ages = snapshot.docs.map((doc) => doc.data().age).sort();
-                expect(ages, `Range query results (${isStub ? 'stub' : 'real'})`).toEqual([30, 35]);
+                expect(ages, `Range query results (${mode})`).toEqual([30, 35]);
             });
         });
 
         it('should handle orderBy queries identically', async () => {
-            await testBothImplementations('orderBy query', async (db, isStub) => {
+            await testAllImplementations('orderBy query', async (db, mode) => {
                 const snapshot = await db.collection(TEST_COLLECTION).orderBy('age', 'desc').get();
 
-                expect(snapshot.size, `OrderBy result count (${isStub ? 'stub' : 'real'})`).toBe(4);
+                expect(snapshot.size, `OrderBy result count (${mode})`).toBe(4);
 
                 const names = snapshot.docs.map((doc) => doc.data().name);
-                expect(names, `OrderBy results (${isStub ? 'stub' : 'real'})`).toEqual(['Charlie', 'Bob', 'David', 'Alice']);
+                expect(names, `OrderBy results (${mode})`).toEqual(['Charlie', 'Bob', 'David', 'Alice']);
             });
         });
 
         it('should handle limit queries identically', async () => {
-            await testBothImplementations('limit query', async (db, isStub) => {
+            await testAllImplementations('limit query', async (db, mode) => {
                 const snapshot = await db.collection(TEST_COLLECTION).orderBy('age').limit(2).get();
 
-                expect(snapshot.size, `Limit result count (${isStub ? 'stub' : 'real'})`).toBe(2);
+                expect(snapshot.size, `Limit result count (${mode})`).toBe(2);
 
                 const names = snapshot.docs.map((doc) => doc.data().name);
-                expect(names, `Limit results (${isStub ? 'stub' : 'real'})`).toEqual(['Alice', 'David']);
+                expect(names, `Limit results (${mode})`).toEqual(['Alice', 'David']);
             });
         });
 
         it('should handle offset queries identically', async () => {
-            await testBothImplementations('offset query', async (db, isStub) => {
+            await testAllImplementations('offset query', async (db, mode) => {
                 const snapshot = await db.collection(TEST_COLLECTION).orderBy('age').offset(2).limit(2).get();
 
-                expect(snapshot.size, `Offset result count (${isStub ? 'stub' : 'real'})`).toBe(2);
+                expect(snapshot.size, `Offset result count (${mode})`).toBe(2);
 
                 const names = snapshot.docs.map((doc) => doc.data().name);
-                expect(names, `Offset results (${isStub ? 'stub' : 'real'})`).toEqual(['Bob', 'Charlie']);
+                expect(names, `Offset results (${mode})`).toEqual(['Bob', 'Charlie']);
             });
         });
 
         it('should handle combined queries identically', async () => {
-            await testBothImplementations('combined query', async (db, isStub) => {
+            await testAllImplementations('combined query', async (db, mode) => {
                 const snapshot = await db.collection(TEST_COLLECTION).where('city', '==', 'NYC').where('age', '>', 25).orderBy('age').get();
 
-                expect(snapshot.size, `Combined query count (${isStub ? 'stub' : 'real'})`).toBe(1);
+                expect(snapshot.size, `Combined query count (${mode})`).toBe(1);
 
                 const data = snapshot.docs[0].data();
-                expect(data?.name, `Combined query result (${isStub ? 'stub' : 'real'})`).toBe('Charlie');
+                expect(data?.name, `Combined query result (${mode})`).toBe('Charlie');
             });
         });
 
         it('should return identical results for paginated queries', async () => {
-            await testBothImplementations('paginated query', async (db, isStub) => {
+            await testAllImplementations('paginated query', async (db, mode) => {
                 const baseQuery = db.collection(TEST_PAGINATION_COLLECTION).orderBy('index');
 
                 const limit = 3;
                 const firstPage = await baseQuery.limit(limit).get();
 
-                expect(firstPage.size, `First page size (${isStub ? 'stub' : 'real'})`).toBe(limit);
+                expect(firstPage.size, `First page size (${mode})`).toBe(limit);
 
                 const lastDoc = firstPage.docs[firstPage.docs.length - 1];
                 const secondPage = await baseQuery.startAfter(lastDoc).limit(limit).get();
 
-                expect(secondPage.size, `Second page size (${isStub ? 'stub' : 'real'})`).toBe(limit);
+                expect(secondPage.size, `Second page size (${mode})`).toBe(limit);
 
                 const combined = [...firstPage.docs, ...secondPage.docs];
                 const indexes = combined.map((doc) => doc.data().index);
@@ -346,7 +407,7 @@ describe('Firestore Stub Compatibility - Integration Test', () => {
 
     describe('Transaction Operations', () => {
         it('should handle transactional reads and writes identically', async () => {
-            await testBothImplementations('transaction', async (db, isStub) => {
+            await testAllImplementations('transaction', async (db, mode) => {
                 const docRef = db.collection(testCollectionPrefix).doc('counter');
                 await docRef.set({ count: 0 });
 
@@ -357,12 +418,12 @@ describe('Firestore Stub Compatibility - Integration Test', () => {
                 });
 
                 const snapshot = await docRef.get();
-                expect(snapshot.data()?.count, `Transaction result (${isStub ? 'stub' : 'real'})`).toBe(1);
+                expect(snapshot.data()?.count, `Transaction result (${mode})`).toBe(1);
             });
         });
 
         it('should rollback transactions on error identically', async () => {
-            await testBothImplementations('transaction rollback', async (db, isStub) => {
+            await testAllImplementations('transaction rollback', async (db, mode) => {
                 const docRef = db.collection(testCollectionPrefix).doc('rollback-test');
                 await docRef.set({ value: 100 });
 
@@ -376,14 +437,14 @@ describe('Firestore Stub Compatibility - Integration Test', () => {
                 }
 
                 const snapshot = await docRef.get();
-                expect(snapshot.data()?.value, `Rollback preserves original (${isStub ? 'stub' : 'real'})`).toBe(100);
+                expect(snapshot.data()?.value, `Rollback preserves original (${mode})`).toBe(100);
             });
         });
     });
 
     describe('Batch Operations', () => {
         it('should handle batch writes identically', async () => {
-            await testBothImplementations('batch writes', async (db, isStub) => {
+            await testAllImplementations('batch writes', async (db, mode) => {
                 const batch = db.batch();
 
                 const doc1 = db.collection(testCollectionPrefix).doc('batch-1');
@@ -397,15 +458,15 @@ describe('Firestore Stub Compatibility - Integration Test', () => {
                 const snapshot1 = await doc1.get();
                 const snapshot2 = await doc2.get();
 
-                expect(snapshot1.exists, `Batch doc 1 exists (${isStub ? 'stub' : 'real'})`).toBe(true);
-                expect(snapshot2.exists, `Batch doc 2 exists (${isStub ? 'stub' : 'real'})`).toBe(true);
+                expect(snapshot1.exists, `Batch doc 1 exists (${mode})`).toBe(true);
+                expect(snapshot2.exists, `Batch doc 2 exists (${mode})`).toBe(true);
             });
         });
     });
 
     describe('Subcollections', () => {
         it('should handle subcollections identically', async () => {
-            await testBothImplementations('subcollections', async (db, isStub) => {
+            await testAllImplementations('subcollections', async (db, mode) => {
                 const groupRef = db.collection(testCollectionPrefix).doc('group-1');
                 await groupRef.set({ name: 'Test Group' });
 
@@ -414,15 +475,15 @@ describe('Firestore Stub Compatibility - Integration Test', () => {
                 await membersRef.doc('member-2').set({ name: 'Bob', role: 'member' });
 
                 const snapshot = await membersRef.get();
-                expect(snapshot.size, `Subcollection size (${isStub ? 'stub' : 'real'})`).toBe(2);
+                expect(snapshot.size, `Subcollection size (${mode})`).toBe(2);
 
                 const names = snapshot.docs.map((doc) => doc.data().name).sort();
-                expect(names, `Subcollection data (${isStub ? 'stub' : 'real'})`).toEqual(['Alice', 'Bob']);
+                expect(names, `Subcollection data (${mode})`).toEqual(['Alice', 'Bob']);
             });
         });
 
         it('should navigate parent/child relationships identically', async () => {
-            await testBothImplementations('parent navigation', async (db, isStub) => {
+            await testAllImplementations('parent navigation', async (db, mode) => {
                 const groupRef = db.collection(testCollectionPrefix).doc('group-2');
                 await groupRef.set({ name: 'Parent Group' });
 
@@ -430,11 +491,11 @@ describe('Firestore Stub Compatibility - Integration Test', () => {
                 await memberRef.set({ name: 'Child Member' });
 
                 const parentRef = memberRef.parent?.parent;
-                expect(parentRef, `Parent reference exists (${isStub ? 'stub' : 'real'})`).toBeDefined();
+                expect(parentRef, `Parent reference exists (${mode})`).toBeDefined();
 
                 if (parentRef) {
                     const parentSnapshot = await parentRef.get();
-                    expect(parentSnapshot.data()?.name, `Parent data accessible (${isStub ? 'stub' : 'real'})`).toBe('Parent Group');
+                    expect(parentSnapshot.data()?.name, `Parent data accessible (${mode})`).toBe('Parent Group');
                 }
             });
         });
@@ -444,53 +505,53 @@ describe('Firestore Stub Compatibility - Integration Test', () => {
         // Uses pre-seeded COLLECTION_GROUP_DATA under TEST_COLLECTION
 
         it('should query collection groups identically', async () => {
-            await testBothImplementations('collection group', async (db, isStub) => {
+            await testAllImplementations('collection group', async (db, mode) => {
                 const snapshot = await db.collectionGroup('items').get();
 
-                expect(snapshot.size, `Collection group size (${isStub ? 'stub' : 'real'})`).toBe(4);
+                expect(snapshot.size, `Collection group size (${mode})`).toBe(4);
             });
         });
 
         it('should filter collection group queries identically', async () => {
-            await testBothImplementations('collection group filter', async (db, isStub) => {
+            await testAllImplementations('collection group filter', async (db, mode) => {
                 const snapshot = await db.collectionGroup('items').where('category', '==', 'cat-1').get();
 
-                expect(snapshot.size, `Filtered items (${isStub ? 'stub' : 'real'})`).toBe(2);
+                expect(snapshot.size, `Filtered items (${mode})`).toBe(2);
             });
         });
 
         it('should limit collection group queries identically', async () => {
-            await testBothImplementations('collection group limit', async (db, isStub) => {
+            await testAllImplementations('collection group limit', async (db, mode) => {
                 const snapshot = await db
                     .collectionGroup('items')
                     .where('category', '==', 'cat-1')
                     .limit(1)
                     .get();
 
-                expect(snapshot.size, `Limited filtered items (${isStub ? 'stub' : 'real'})`).toBe(1);
-                expect(snapshot.docs[0].id, `Limited item ID (${isStub ? 'stub' : 'real'})`).toBe('item-1');
+                expect(snapshot.size, `Limited filtered items (${mode})`).toBe(1);
+                expect(snapshot.docs[0].id, `Limited item ID (${mode})`).toBe('item-1');
             });
         });
     });
 
     describe('Edge Cases', () => {
         it('should handle non-existent documents identically', async () => {
-            await testBothImplementations('non-existent doc', async (db, isStub) => {
+            await testAllImplementations('non-existent doc', async (db, mode) => {
                 const docRef = db.collection(testCollectionPrefix).doc('does-not-exist');
                 const snapshot = await docRef.get();
 
-                expect(snapshot.exists, `Non-existent doc (${isStub ? 'stub' : 'real'})`).toBe(false);
-                expect(snapshot.data(), `Non-existent doc data (${isStub ? 'stub' : 'real'})`).toBeUndefined();
+                expect(snapshot.exists, `Non-existent doc (${mode})`).toBe(false);
+                expect(snapshot.data(), `Non-existent doc data (${mode})`).toBeUndefined();
             });
         });
 
         it('should handle update on non-existent document identically', async () => {
-            await testBothImplementations('update non-existent', async (db, isStub) => {
+            await testAllImplementations('update non-existent', async (db, mode) => {
                 const docRef = db.collection(testCollectionPrefix).doc('does-not-exist-update');
 
                 try {
                     await docRef.update({ field: 'value' });
-                    expect.fail(`Should have thrown error (${isStub ? 'stub' : 'real'})`);
+                    expect.fail(`Should have thrown error (${mode})`);
                 } catch (error: any) {
                     const message = String(error?.message ?? error ?? '');
                     const errorCode = error?.code;
@@ -499,7 +560,7 @@ describe('Firestore Stub Compatibility - Integration Test', () => {
                         || message.includes('NOT_FOUND')
                         || errorCode === 5
                         || errorCode === 'not-found';
-                    expect(matches, `Error message matches (${isStub ? 'stub' : 'real'})`).toBe(true);
+                    expect(matches, `Error message matches (${mode})`).toBe(true);
                 }
             });
         });
@@ -659,7 +720,7 @@ describe('Firestore Stub Compatibility - Integration Test', () => {
 
         describe('Realtime listeners', () => {
             it('should stream document snapshots identically', async () => {
-                await testBothImplementations('document listener', async (db, isStub) => {
+                await testAllImplementations('document listener', async (db, mode) => {
                     const docRef = db.collection(`${testCollectionPrefix}-listeners`).doc('doc-stream');
                     const snapshots: Array<{ exists: boolean; data: any | undefined; }> = [];
                     const errors: Error[] = [];
@@ -669,21 +730,21 @@ describe('Firestore Stub Compatibility - Integration Test', () => {
                         (error) => errors.push(error),
                     );
 
-                    await waitForListenerFlush(isStub);
+                    await waitForListenerFlush(mode);
 
                     await docRef.set({ stage: 'created', value: 1 });
-                    await waitForListenerFlush(isStub);
+                    await waitForListenerFlush(mode);
 
                     await docRef.update({ stage: 'updated', value: 2 });
-                    await waitForListenerFlush(isStub);
+                    await waitForListenerFlush(mode);
 
                     await docRef.delete();
-                    await waitForListenerFlush(isStub);
+                    await waitForListenerFlush(mode);
 
                     unsubscribe();
 
-                    expect(errors, `Listener errors (${isStub ? 'stub' : 'real'})`).toHaveLength(0);
-                    expect(snapshots.length, `Snapshot count (${isStub ? 'stub' : 'real'})`).toBe(4);
+                    expect(errors, `Listener errors (${mode})`).toHaveLength(0);
+                    expect(snapshots.length, `Snapshot count (${mode})`).toBe(4);
                     expect(snapshots[0].exists).toBe(false);
                     expect(snapshots[1].data).toEqual({ stage: 'created', value: 1 });
                     expect(snapshots[2].data).toEqual({ stage: 'updated', value: 2 });
@@ -692,7 +753,7 @@ describe('Firestore Stub Compatibility - Integration Test', () => {
             });
 
             it('should stream filtered query snapshots identically', async () => {
-                await testBothImplementations('query listener', async (db, isStub) => {
+                await testAllImplementations('query listener', async (db, mode) => {
                     const collection = db.collection(TEST_LISTENER_QUERIES_COLLECTION);
 
                     // Clean up any existing docs first (from previous runs)
@@ -717,21 +778,21 @@ describe('Firestore Stub Compatibility - Integration Test', () => {
                             (error) => errors.push(error),
                         );
 
-                    await waitForListenerFlush(isStub);
+                    await waitForListenerFlush(mode);
 
                     await collection.doc('user-3').set({ name: 'Charlie', city: 'NYC' });
-                    await waitForListenerFlush(isStub);
+                    await waitForListenerFlush(mode);
 
                     await collection.doc('user-1').update({ city: 'SF' });
-                    await waitForListenerFlush(isStub);
+                    await waitForListenerFlush(mode);
 
                     await collection.doc('user-2').set({ name: 'Bob', city: 'NYC' });
-                    await waitForListenerFlush(isStub);
+                    await waitForListenerFlush(mode);
 
                     unsubscribe();
 
-                    expect(errors, `Query listener errors (${isStub ? 'stub' : 'real'})`).toHaveLength(0);
-                    expect(results, `Query snapshot evolution (${isStub ? 'stub' : 'real'})`).toEqual([
+                    expect(errors, `Query listener errors (${mode})`).toHaveLength(0);
+                    expect(results, `Query snapshot evolution (${mode})`).toEqual([
                         ['Alice'],
                         ['Alice', 'Charlie'],
                         ['Charlie'],
