@@ -45,7 +45,9 @@
     "test:unit": "vitest run src/__tests__/unit",
     "test:integration": "vitest run src/__tests__/integration",
     "indexes:deploy": "npx tsx scripts/deploy-indexes.ts",
-    "test:wipe-data": "npx tsx scripts/wipe-test-data.ts"
+    "test:wipe-data": "npx tsx scripts/wipe-test-data.ts",
+    "format": "dprint fmt",
+    "format:check": "dprint check"
   },
   "devDependencies": {
     "@types/node": "^24.0.14",
