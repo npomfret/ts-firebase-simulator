@@ -770,6 +770,25 @@ describe('Firestore Stub Compatibility - Integration Test', () => {
                     const results: string[][] = [];
                     const errors: Error[] = [];
 
+                    // Wait for the initial snapshot before subscribing to avoid race conditions
+                    // between document setup and listener registration
+                    await new Promise<void>((resolve) => {
+                        let resolved = false;
+                        const unsubscribeInit = collection
+                            .where('city', '==', 'NYC')
+                            .orderBy('name')
+                            .onSnapshot(
+                                () => {
+                                    if (!resolved) {
+                                        resolved = true;
+                                        unsubscribeInit();
+                                        resolve();
+                                    }
+                                },
+                                (error) => errors.push(error),
+                            );
+                    });
+
                     const unsubscribe = collection
                         .where('city', '==', 'NYC')
                         .orderBy('name')
