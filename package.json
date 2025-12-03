@@ -50,7 +50,10 @@
     "indexes:deploy": "npx tsx scripts/deploy-indexes.ts",
     "test:wipe-data": "npx tsx scripts/wipe-test-data.ts",
     "format": "dprint fmt",
-    "format:check": "dprint check"
+    "format:check": "dprint check",
+    "release:patch": "npm version patch && npm publish",
+    "release:minor": "npm version minor && npm publish",
+    "release:major": "npm version major && npm publish"
   },
   "peerDependencies": {
     "@google-cloud/tasks": ">=6.0.0",
