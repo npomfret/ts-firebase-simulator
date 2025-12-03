@@ -13,10 +13,10 @@
  *   - Firebase CLI installed globally (npm install -g firebase-tools)
  */
 
+import { execSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
-import { execSync } from 'child_process';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -51,9 +51,9 @@ function getServiceAccountPath(): string {
         return localPath;
     }
     throw new Error(
-        'No service account found. Either:\n' +
-        '  1. Place service-account-key.json in packages/firebase-simulator/\n' +
-        '  2. Set GOOGLE_APPLICATION_CREDENTIALS environment variable',
+        'No service account found. Either:\n'
+            + '  1. Place service-account-key.json in packages/firebase-simulator/\n'
+            + '  2. Set GOOGLE_APPLICATION_CREDENTIALS environment variable',
     );
 }
 

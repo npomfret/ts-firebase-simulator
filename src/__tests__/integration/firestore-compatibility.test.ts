@@ -10,6 +10,10 @@
  * - The service account file is gitignored
  */
 
+import { cert, getApps, initializeApp } from 'firebase-admin/app';
+import { getFirestore as getAdminFirestore } from 'firebase-admin/firestore';
+import * as fs from 'fs';
+import * as path from 'path';
 import {
     attachTriggersToStub,
     createFirestoreDatabase,
@@ -20,10 +24,6 @@ import {
     Timestamp,
     type TriggerDefinition,
 } from 'ts-firebase-simulator';
-import * as fs from 'fs';
-import { cert, getApps, initializeApp } from 'firebase-admin/app';
-import { getFirestore as getAdminFirestore } from 'firebase-admin/firestore';
-import * as path from 'path';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 function getServiceAccountPath(): string {
@@ -36,9 +36,9 @@ function getServiceAccountPath(): string {
         return localPath;
     }
     throw new Error(
-        'No service account found. Either:\n' +
-        '  1. Place service-account-key.json in packages/firebase-simulator/\n' +
-        '  2. Set GOOGLE_APPLICATION_CREDENTIALS environment variable',
+        'No service account found. Either:\n'
+            + '  1. Place service-account-key.json in packages/firebase-simulator/\n'
+            + '  2. Set GOOGLE_APPLICATION_CREDENTIALS environment variable',
     );
 }
 

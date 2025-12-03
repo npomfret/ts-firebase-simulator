@@ -11,16 +11,11 @@
  * - Your Firebase project must have a Storage bucket created
  */
 
-import {
-    createStorage,
-    type IStorage,
-    type IStorageBucket,
-    StubStorage,
-} from 'ts-firebase-simulator';
-import * as fs from 'fs';
-import { cert, getApps, initializeApp, type App } from 'firebase-admin/app';
+import { type App, cert, getApps, initializeApp } from 'firebase-admin/app';
 import { getStorage } from 'firebase-admin/storage';
+import * as fs from 'fs';
 import * as path from 'path';
+import { createStorage, type IStorage, type IStorageBucket, StubStorage } from 'ts-firebase-simulator';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 function getServiceAccountPath(): string {
@@ -32,9 +27,9 @@ function getServiceAccountPath(): string {
         return localPath;
     }
     throw new Error(
-        'No service account found. Either:\n' +
-        '  1. Place service-account-key.json in packages/firebase-simulator/\n' +
-        '  2. Set GOOGLE_APPLICATION_CREDENTIALS environment variable',
+        'No service account found. Either:\n'
+            + '  1. Place service-account-key.json in packages/firebase-simulator/\n'
+            + '  2. Set GOOGLE_APPLICATION_CREDENTIALS environment variable',
     );
 }
 
