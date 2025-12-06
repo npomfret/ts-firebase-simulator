@@ -159,6 +159,18 @@ describe('StubFirestoreDatabase - Example Usage', () => {
 
             expect(result).toBe(2);
         });
+
+        it('should throw error when reading after writing in transaction', async () => {
+            const docRef1 = db.collection('users').doc('user-1');
+            const docRef2 = db.collection('users').doc('user-2');
+            await docRef1.set({ name: 'Alice' });
+            await docRef2.set({ name: 'Bob' });
+
+            await expect(db.runTransaction(async (transaction) => {
+                transaction.set(docRef1, { name: 'Alice Updated' });
+                await transaction.get(docRef2);
+            })).rejects.toThrow('Firestore transactions require all reads to be executed before all writes.');
+        });
     });
 
     describe('Batch operations', () => {

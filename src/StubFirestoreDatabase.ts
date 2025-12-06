@@ -950,6 +950,9 @@ class StubTransaction implements ITransaction {
     async get(documentRef: IDocumentReference): Promise<IDocumentSnapshot>;
     async get(query: IQuery): Promise<IQuerySnapshot>;
     async get(documentRefOrQuery: IDocumentReference | IQuery): Promise<IDocumentSnapshot | IQuerySnapshot> {
+        if (this.writes.length > 0) {
+            throw new Error('Firestore transactions require all reads to be executed before all writes.');
+        }
         if ('getUnderlyingRef' in documentRefOrQuery || 'path' in documentRefOrQuery) {
             const docRef = documentRefOrQuery as StubDocumentReference;
             const doc = this.storage.get(docRef.path);
