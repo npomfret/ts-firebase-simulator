@@ -238,7 +238,7 @@ describe('Firestore Stub Compatibility - Integration Test', () => {
         }
     }
 
-    function waitForListenerFlush(mode: TestMode, delayMs: number = 60): Promise<void> {
+    function waitForListenerFlush(mode: TestMode, delayMs: number = 150): Promise<void> {
         return new Promise((resolve) => setTimeout(resolve, mode === 'stub' ? 0 : delayMs));
     }
 
