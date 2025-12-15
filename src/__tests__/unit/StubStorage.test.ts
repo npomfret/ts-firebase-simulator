@@ -86,4 +86,64 @@ describe('StubStorage', () => {
         snapshotA?.content.fill(0);
         expect(snapshotB?.content.toString('utf8')).toBe('value');
     });
+
+    describe('IStorageFile', () => {
+        it('exists() returns true for an existing file', async () => {
+            const file = storage.bucket().file('exists.txt');
+            await file.save('some content');
+            const [exists] = await file.exists();
+            expect(exists).toBe(true);
+        });
+
+        it('exists() returns false for a non-existent file', async () => {
+            const file = storage.bucket().file('non-existent.txt');
+            const [exists] = await file.exists();
+            expect(exists).toBe(false);
+        });
+
+        it('exists() returns false for a deleted file', async () => {
+            const file = storage.bucket().file('deleted.txt');
+            await file.save('some content');
+            await file.delete();
+            const [exists] = await file.exists();
+            expect(exists).toBe(false);
+        });
+
+        it('getMetadata() returns metadata for an existing file', async () => {
+            const file = storage.bucket().file('metadata.txt');
+            await file.save('content', { metadata: { contentType: 'text/plain' } });
+            const [metadata] = await file.getMetadata();
+            expect(metadata).toEqual({ contentType: 'text/plain' });
+        });
+
+        it('getMetadata() returns empty object if no metadata', async () => {
+            const file = storage.bucket().file('no-metadata.txt');
+            await file.save('content');
+            const [metadata] = await file.getMetadata();
+            expect(metadata).toEqual({});
+        });
+
+        it('getMetadata() throws error for non-existent file', async () => {
+            const file = storage.bucket().file('non-existent-metadata.txt');
+            await expect(file.getMetadata()).rejects.toThrow('File non-existent-metadata.txt does not exist in bucket default-test-bucket');
+        });
+
+        it('createReadStream() returns a readable stream with correct content', async () => {
+            const file = storage.bucket().file('stream.txt');
+            const content = 'stream content';
+            await file.save(content);
+
+            const stream = file.createReadStream();
+            let receivedContent = '';
+            for await (const chunk of stream) {
+                receivedContent += chunk.toString();
+            }
+            expect(receivedContent).toBe(content);
+        });
+
+        it('createReadStream() throws error for non-existent file', async () => {
+            const file = storage.bucket().file('non-existent-stream.txt');
+            expect(() => file.createReadStream()).toThrow('File non-existent-stream.txt does not exist in bucket default-test-bucket');
+        });
+    });
 });

@@ -351,6 +351,67 @@ describe('Storage Stub Compatibility - Integration Test', () => {
         });
     });
 
+    describe('File Existence and Metadata', () => {
+        it('should report file existence identically', async () => {
+            await testAllImplementations('file exists', async (bucket, mode, storage) => {
+                const filePath = `${testPathPrefix}/exists-file-${mode}.txt`;
+                const file = bucket.file(filePath);
+
+                // Should not exist initially
+                const [initialExists] = await file.exists();
+                expect(initialExists, `File should not exist initially (${mode})`).toBe(false);
+
+                // Save file
+                await file.save('some content');
+
+                // Should exist after saving
+                const [afterSaveExists] = await file.exists();
+                expect(afterSaveExists, `File should exist after save (${mode})`).toBe(true);
+
+                // Delete file
+                await file.delete();
+
+                // Should not exist after deleting
+                const [afterDeleteExists] = await file.exists();
+                expect(afterDeleteExists, `File should not exist after delete (${mode})`).toBe(false);
+            });
+        });
+
+        it('should retrieve file metadata identically', async () => {
+            await testAllImplementations('file metadata', async (bucket, mode, storage) => {
+                const filePath = `${testPathPrefix}/metadata-retrieve-file-${mode}.txt`;
+                const file = bucket.file(filePath);
+                const metadata = {
+                    contentType: 'text/plain',
+                    metadata: { customField: 'customValue' },
+                };
+
+                await file.save('some content', { metadata });
+
+                // For emulator/real, getMetadata includes more fields, so we just check what we set
+                const [retrievedMetadata] = await file.getMetadata();
+                expect(retrievedMetadata.contentType, `Content type matches (${mode})`).toBe(metadata.contentType);
+                // Custom metadata might be nested under 'metadata' field for real/emulator
+                const customMetadata = (retrievedMetadata as any).metadata?.customField;
+                expect(customMetadata, `Custom field matches (${mode})`).toBe(metadata.metadata?.customField);
+            });
+        });
+
+        it('should throw error when getting metadata for non-existent file', async () => {
+            await testAllImplementations('metadata non-existent', async (bucket, mode) => {
+                const filePath = `${testPathPrefix}/non-existent-metadata-${mode}.txt`;
+                const file = bucket.file(filePath);
+
+                if (mode === 'stub') {
+                    await expect(file.getMetadata()).rejects.toThrow(`File ${filePath} does not exist in bucket ${bucket.name}`);
+                } else {
+                    // Firebase's getMetadata() for non-existent files returns a 404, which results in an error
+                    await expect(file.getMetadata()).rejects.toThrow();
+                }
+            });
+        });
+    });
+
     describe('Make Public', () => {
         it('should make files public without error', async () => {
             await testAllImplementations('make public', async (bucket, mode, storage) => {
@@ -366,6 +427,45 @@ describe('Storage Stub Compatibility - Integration Test', () => {
                 if (mode === 'stub' && storage) {
                     const snapshot = storage.getFile(bucket.name, filePath);
                     expect(snapshot?.public, `File marked public (${mode})`).toBe(true);
+                }
+            });
+        });
+    });
+
+    describe('File Streaming', () => {
+        it('should create a readable stream with correct content identically', async () => {
+            await testAllImplementations('stream content', async (bucket, mode) => {
+                const filePath = `${testPathPrefix}/stream-file-${mode}.txt`;
+                const content = 'This is content to be streamed.';
+
+                const file = bucket.file(filePath);
+                await file.save(content);
+
+                const stream = file.createReadStream();
+                let receivedContent = '';
+                for await (const chunk of stream) {
+                    receivedContent += chunk.toString();
+                }
+                expect(receivedContent, `Streamed content matches (${mode})`).toBe(content);
+            });
+        });
+
+        it('should throw error when creating read stream for non-existent file', async () => {
+            await testAllImplementations('stream non-existent', async (bucket, mode) => {
+                const filePath = `${testPathPrefix}/non-existent-stream-${mode}.txt`;
+                const file = bucket.file(filePath);
+
+                if (mode === 'stub') {
+                    expect(() => file.createReadStream()).toThrow(`File ${filePath} does not exist in bucket ${bucket.name}`);
+                } else {
+                    // Firebase's createReadStream() for non-existent files will error on 'data' event
+                    // or 'error' event before any data.
+                    const stream = file.createReadStream();
+                    await expect(new Promise((resolve, reject) => {
+                        stream.on('data', () => { });
+                        stream.on('error', reject);
+                        stream.on('end', resolve);
+                    })).rejects.toThrow();
                 }
             });
         });

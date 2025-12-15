@@ -1,6 +1,7 @@
 import type { Bucket, File } from '@google-cloud/storage';
 import type * as admin from 'firebase-admin';
-import type { IStorage, IStorageBucket, IStorageFile, StorageFileContent, StorageSaveOptions } from './storage-types';
+import type { IStorage, IStorageBucket, IStorageFile, StorageFileContent, StorageFileMetadata, StorageSaveOptions } from './storage-types';
+import { Readable } from 'node:stream';
 
 class StorageWrapper implements IStorage {
     constructor(private readonly storage: admin.storage.Storage) {}
@@ -37,6 +38,33 @@ class StorageFileWrapper implements IStorageFile {
 
     async delete(): Promise<void> {
         await this.file.delete();
+    }
+
+    async exists(): Promise<[boolean]> {
+        return this.file.exists();
+    }
+
+    async getMetadata(): Promise<[StorageFileMetadata]> {
+        const [metadataResponse] = await this.file.getMetadata();
+
+        const transformedMetadata: StorageFileMetadata = {
+            cacheControl: metadataResponse.cacheControl,
+            contentType: metadataResponse.contentType,
+            metadata: undefined,
+        };
+
+        if (metadataResponse.metadata) {
+            transformedMetadata.metadata = Object.entries(metadataResponse.metadata).reduce((acc, [key, value]) => {
+                acc[key] = String(value);
+                return acc;
+            }, {} as Record<string, string>);
+        }
+
+        return [transformedMetadata];
+    }
+
+    createReadStream(): Readable {
+        return this.file.createReadStream();
     }
 }
 

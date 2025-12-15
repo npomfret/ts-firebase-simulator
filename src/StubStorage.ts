@@ -1,4 +1,5 @@
 import { Buffer } from 'node:buffer';
+import { Readable } from 'node:stream';
 import type { IStorage, IStorageBucket, IStorageFile, StorageFileContent, StorageFileMetadata, StorageSaveOptions } from './storage-types';
 
 export interface SeedFileOptions extends StorageSaveOptions {
@@ -148,6 +149,30 @@ export class StubStorageFile implements IStorageFile {
 
     async delete(): Promise<void> {
         this.storage.deleteFile(this.bucket.name, this.path);
+    }
+
+    async exists(): Promise<[boolean]> {
+        const record = this.storage.getFile(this.bucket.name, this.path);
+        return [!!record];
+    }
+
+    async getMetadata(): Promise<[StorageFileMetadata]> {
+        const record = this.storage.getFile(this.bucket.name, this.path);
+        if (!record) {
+            throw new Error(`File ${this.path} does not exist in bucket ${this.bucket.name}`);
+        }
+        return [record.metadata ?? {}];
+    }
+
+    createReadStream(): Readable {
+        const record = this.storage.getFile(this.bucket.name, this.path);
+        if (!record) {
+            throw new Error(`File ${this.path} does not exist in bucket ${this.bucket.name}`);
+        }
+        const stream = new Readable();
+        stream.push(record.content);
+        stream.push(null); // No more data
+        return stream;
     }
 }
 
