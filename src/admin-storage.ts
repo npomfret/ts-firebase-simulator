@@ -21,10 +21,19 @@ class StorageBucketWrapper implements IStorageBucket {
     file(path: string): IStorageFile {
         return new StorageFileWrapper(this.bucket.file(path));
     }
+
+    async getFiles(options?: { prefix?: string }): Promise<[IStorageFile[]]> {
+        const [files] = await this.bucket.getFiles(options);
+        return [files.map((file) => new StorageFileWrapper(file))];
+    }
 }
 
 class StorageFileWrapper implements IStorageFile {
     constructor(private readonly file: File) {}
+
+    get name(): string {
+        return this.file.name;
+    }
 
     async save(data: StorageFileContent, options: StorageSaveOptions = {}): Promise<void> {
         await this.file.save(data, {
@@ -50,6 +59,7 @@ class StorageFileWrapper implements IStorageFile {
         const transformedMetadata: StorageFileMetadata = {
             cacheControl: metadataResponse.cacheControl,
             contentType: metadataResponse.contentType,
+            size: Number(metadataResponse.size),
             metadata: undefined,
         };
 

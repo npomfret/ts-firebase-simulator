@@ -61,6 +61,19 @@ export class StubStorage implements IStorage {
         return result;
     }
 
+    getFiles(bucketName: string, options?: { prefix?: string }): StoredFileSnapshot[] {
+        const results: StoredFileSnapshot[] = [];
+        for (const record of this.files.values()) {
+            if (record.bucket === bucketName) {
+                if (options?.prefix && !record.path.startsWith(options.prefix)) {
+                    continue;
+                }
+                results.push(cloneRecord(record));
+            }
+        }
+        return results;
+    }
+
     getFile(bucketName: string, path: string): StoredFileSnapshot | undefined {
         const key = makeKey(bucketName, normalizePath(path));
         const record = this.files.get(key);
@@ -126,6 +139,11 @@ export class StubStorageBucket implements IStorageBucket {
     file(path: string): StubStorageFile {
         return new StubStorageFile(this.storage, this, normalizePath(path));
     }
+
+    async getFiles(options?: { prefix?: string }): Promise<[StubStorageFile[]]> {
+        const files = this.storage.getFiles(this.bucketName, options);
+        return [files.map((f) => new StubStorageFile(this.storage, this, f.path))];
+    }
 }
 
 export class StubStorageFile implements IStorageFile {
@@ -161,7 +179,12 @@ export class StubStorageFile implements IStorageFile {
         if (!record) {
             throw new Error(`File ${this.path} does not exist in bucket ${this.bucket.name}`);
         }
-        return [record.metadata ?? {}];
+        return [
+            {
+                ...record.metadata,
+                size: record.size,
+            },
+        ];
     }
 
     createReadStream(): Readable {
@@ -193,6 +216,7 @@ function cloneMetadata(metadata?: StorageFileMetadata): StorageFileMetadata | un
         cacheControl: metadata.cacheControl,
         contentType: metadata.contentType,
         metadata: metadata.metadata ? { ...metadata.metadata } : undefined,
+        size: metadata.size,
     };
 }
 

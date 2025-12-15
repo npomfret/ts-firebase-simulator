@@ -113,14 +113,22 @@ describe('StubStorage', () => {
             const file = storage.bucket().file('metadata.txt');
             await file.save('content', { metadata: { contentType: 'text/plain' } });
             const [metadata] = await file.getMetadata();
-            expect(metadata).toEqual({ contentType: 'text/plain' });
+            expect(metadata).toEqual({ contentType: 'text/plain', size: 7 });
         });
 
         it('getMetadata() returns empty object if no metadata', async () => {
             const file = storage.bucket().file('no-metadata.txt');
             await file.save('content');
             const [metadata] = await file.getMetadata();
-            expect(metadata).toEqual({});
+            expect(metadata).toEqual({ size: 7 });
+        });
+
+        it('getMetadata() returns the file size', async () => {
+            const file = storage.bucket().file('size.txt');
+            const content = '1234567890';
+            await file.save(content);
+            const [metadata] = await file.getMetadata();
+            expect(metadata.size).toBe(content.length);
         });
 
         it('getMetadata() throws error for non-existent file', async () => {
@@ -144,6 +152,20 @@ describe('StubStorage', () => {
         it('createReadStream() throws error for non-existent file', async () => {
             const file = storage.bucket().file('non-existent-stream.txt');
             expect(() => file.createReadStream()).toThrow('File non-existent-stream.txt does not exist in bucket default-test-bucket');
+        });
+    });
+
+    describe('IStorageBucket', () => {
+        it('getFiles() returns all files in the bucket', async () => {
+            const bucket = storage.bucket();
+            await bucket.file('one.txt').save('one');
+            await bucket.file('two.txt').save('two');
+
+            const [files] = await bucket.getFiles();
+            expect(files).toHaveLength(2);
+
+            const names = files.map((f) => f.name).sort();
+            expect(names).toEqual(['one.txt', 'two.txt']);
         });
     });
 });

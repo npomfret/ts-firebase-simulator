@@ -471,6 +471,40 @@ describe('Storage Stub Compatibility - Integration Test', () => {
         });
     });
 
+    describe('Listing and Metadata', () => {
+        it('should list files in a bucket', async () => {
+            await testAllImplementations('list files', async (bucket, mode) => {
+                const listPrefix = `${testPathPrefix}/list-test-${mode}`;
+                const filePaths = [
+                    `${listPrefix}/list-a.txt`,
+                    `${listPrefix}/list-b.txt`,
+                ];
+                for (const path of filePaths) {
+                    await bucket.file(path).save(`Content for ${path}`);
+                }
+
+                const [files] = await bucket.getFiles({ prefix: listPrefix });
+                const names = files.map((f) => f.name).sort();
+                expect(names).toHaveLength(2);
+                expect(names.sort()).toEqual(filePaths.sort());
+            });
+        });
+
+        it('should include file size in metadata', async () => {
+            await testAllImplementations('file size in metadata', async (bucket, mode) => {
+                const filePath = `${testPathPrefix}/metadata-size-${mode}.txt`;
+                const content = 'This content has a size.';
+                const file = bucket.file(filePath);
+                await file.save(content);
+
+                const [metadata] = await file.getMetadata();
+
+                // Real Firebase returns size as a string, stub returns a number. Coerce to number for comparison.
+                expect(Number(metadata.size), `File size matches (${mode})`).toBe(content.length);
+            });
+        });
+    });
+
     describe('Stub-Specific Features', () => {
         it('should track file size correctly', async () => {
             const filePath = `${testPathPrefix}/size-test.txt`;

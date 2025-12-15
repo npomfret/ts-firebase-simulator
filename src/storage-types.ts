@@ -7,6 +7,7 @@ export interface StorageFileMetadata {
     cacheControl?: string;
     contentType?: string;
     metadata?: Record<string, string>;
+    size?: number;
 }
 
 export interface StorageSaveOptions {
@@ -20,9 +21,11 @@ export interface IStorage {
 export interface IStorageBucket {
     readonly name: string;
     file(path: string): IStorageFile;
+    getFiles(options?: { prefix?: string }): Promise<[IStorageFile[]]>;
 }
 
 export interface IStorageFile {
+    readonly name: string;
     save(data: StorageFileContent, options?: StorageSaveOptions): Promise<void>;
     makePublic(): Promise<void>;
     delete(): Promise<void>;
