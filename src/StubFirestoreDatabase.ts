@@ -964,6 +964,20 @@ class StubTransaction implements ITransaction {
         }
     }
 
+    async getAll(...documentRefs: IDocumentReference[]): Promise<IDocumentSnapshot[]> {
+        if (this.writes.length > 0) {
+            throw new Error('Firestore transactions require all reads to be executed before all writes.');
+        }
+        const snapshots: IDocumentSnapshot[] = [];
+        for (const ref of documentRefs) {
+            const docRef = ref as StubDocumentReference;
+            const doc = this.storage.get(docRef.path);
+            this.reads.set(docRef.path, doc ?? null);
+            snapshots.push(new StubDocumentSnapshot(doc ?? null, docRef));
+        }
+        return snapshots;
+    }
+
     set(documentRef: IDocumentReference, data: any, options?: SetOptions): ITransaction {
         this.writes.push({ type: 'set', ref: documentRef, data, options });
         return this;
@@ -1350,6 +1364,11 @@ export class StubFirestoreDatabase implements IFirestoreDatabase {
 
     batch(): IWriteBatch {
         return new StubWriteBatch(this.storage, this);
+    }
+
+    async getAll(...documentRefs: IDocumentReference[]): Promise<IDocumentSnapshot[]> {
+        const snapshots = await Promise.all(documentRefs.map((ref) => ref.get()));
+        return snapshots;
     }
 
     seed(documentPath: string, data: any): void {

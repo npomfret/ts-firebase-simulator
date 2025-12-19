@@ -250,6 +250,13 @@ export interface ITransaction {
     get(query: IQuery): Promise<IQuerySnapshot>;
 
     /**
+     * Read multiple documents within the transaction
+     * @param documentRefs - Document references to read
+     * @returns Array of document snapshots in the same order as the input references
+     */
+    getAll(...documentRefs: IDocumentReference[]): Promise<IDocumentSnapshot[]>;
+
+    /**
      * Write to a document within the transaction
      * @param documentRef - Document reference to write to
      * @param data - Document data
@@ -335,6 +342,13 @@ export interface IFirestoreDatabase {
      * @returns Document reference
      */
     doc(documentPath: string): IDocumentReference;
+
+    /**
+     * Retrieve multiple documents in a single batch request
+     * @param documentRefs - Document references to retrieve
+     * @returns Array of document snapshots in the same order as the input references
+     */
+    getAll(...documentRefs: IDocumentReference[]): Promise<IDocumentSnapshot[]>;
 
     /**
      * Query across all collections with the same ID

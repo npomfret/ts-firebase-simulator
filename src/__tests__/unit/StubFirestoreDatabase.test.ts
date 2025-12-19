@@ -199,6 +199,102 @@ describe('StubFirestoreDatabase - Example Usage', () => {
         });
     });
 
+    describe('Batch read operations (getAll)', () => {
+        it('should read multiple documents at once', async () => {
+            await db.collection('users').doc('user-1').set({ name: 'Alice', age: 25 });
+            await db.collection('users').doc('user-2').set({ name: 'Bob', age: 30 });
+            await db.collection('users').doc('user-3').set({ name: 'Charlie', age: 35 });
+
+            const doc1 = db.collection('users').doc('user-1');
+            const doc2 = db.collection('users').doc('user-2');
+            const doc3 = db.collection('users').doc('user-3');
+
+            const snapshots = await db.getAll(doc1, doc2, doc3);
+
+            expect(snapshots).toHaveLength(3);
+            expect(snapshots[0].exists).toBe(true);
+            expect(snapshots[0].id).toBe('user-1');
+            expect(snapshots[0].data()).toEqual({ name: 'Alice', age: 25 });
+            expect(snapshots[1].exists).toBe(true);
+            expect(snapshots[1].id).toBe('user-2');
+            expect(snapshots[1].data()).toEqual({ name: 'Bob', age: 30 });
+            expect(snapshots[2].exists).toBe(true);
+            expect(snapshots[2].id).toBe('user-3');
+            expect(snapshots[2].data()).toEqual({ name: 'Charlie', age: 35 });
+        });
+
+        it('should handle non-existent documents in getAll', async () => {
+            await db.collection('users').doc('user-1').set({ name: 'Alice' });
+
+            const doc1 = db.collection('users').doc('user-1');
+            const doc2 = db.collection('users').doc('non-existent');
+
+            const snapshots = await db.getAll(doc1, doc2);
+
+            expect(snapshots).toHaveLength(2);
+            expect(snapshots[0].exists).toBe(true);
+            expect(snapshots[0].data()).toEqual({ name: 'Alice' });
+            expect(snapshots[1].exists).toBe(false);
+            expect(snapshots[1].data()).toBeUndefined();
+        });
+
+        it('should return empty array when no refs provided', async () => {
+            const snapshots = await db.getAll();
+            expect(snapshots).toHaveLength(0);
+        });
+
+        it('should read documents from different collections', async () => {
+            await db.collection('users').doc('user-1').set({ name: 'Alice' });
+            await db.collection('posts').doc('post-1').set({ title: 'Hello World' });
+
+            const userDoc = db.collection('users').doc('user-1');
+            const postDoc = db.collection('posts').doc('post-1');
+
+            const snapshots = await db.getAll(userDoc, postDoc);
+
+            expect(snapshots).toHaveLength(2);
+            expect(snapshots[0].data()).toEqual({ name: 'Alice' });
+            expect(snapshots[1].data()).toEqual({ title: 'Hello World' });
+        });
+
+        it('should use getAll in transactions', async () => {
+            await db.collection('users').doc('user-1').set({ name: 'Alice', balance: 100 });
+            await db.collection('users').doc('user-2').set({ name: 'Bob', balance: 50 });
+
+            await db.runTransaction(async (transaction) => {
+                const doc1 = db.collection('users').doc('user-1');
+                const doc2 = db.collection('users').doc('user-2');
+
+                const snapshots = await transaction.getAll(doc1, doc2);
+
+                expect(snapshots).toHaveLength(2);
+                expect(snapshots[0].data()?.balance).toBe(100);
+                expect(snapshots[1].data()?.balance).toBe(50);
+
+                // Transfer funds
+                transaction.update(doc1, { balance: 80 });
+                transaction.update(doc2, { balance: 70 });
+            });
+
+            const finalDoc1 = await db.collection('users').doc('user-1').get();
+            const finalDoc2 = await db.collection('users').doc('user-2').get();
+            expect(finalDoc1.data()?.balance).toBe(80);
+            expect(finalDoc2.data()?.balance).toBe(70);
+        });
+
+        it('should throw error when using getAll after writes in transaction', async () => {
+            const doc1 = db.collection('users').doc('user-1');
+            const doc2 = db.collection('users').doc('user-2');
+            await doc1.set({ name: 'Alice' });
+            await doc2.set({ name: 'Bob' });
+
+            await expect(db.runTransaction(async (transaction) => {
+                transaction.set(doc1, { name: 'Alice Updated' });
+                await transaction.getAll(doc1, doc2);
+            })).rejects.toThrow('Firestore transactions require all reads to be executed before all writes.');
+        });
+    });
+
     describe('Test helpers', () => {
         it('should seed data using helper', () => {
             db.seed('users/user-123', { name: 'Test User', age: 25 });

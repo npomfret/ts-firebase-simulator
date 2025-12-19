@@ -478,6 +478,81 @@ describe('Firestore Stub Compatibility - Integration Test', () => {
         });
     });
 
+    describe('Batch Read Operations (getAll)', () => {
+        it('should read multiple documents at once identically', async () => {
+            await testAllImplementations('getAll multiple docs', async (db, mode) => {
+                const doc1 = db.collection(testCollectionPrefix).doc('getall-1');
+                const doc2 = db.collection(testCollectionPrefix).doc('getall-2');
+                const doc3 = db.collection(testCollectionPrefix).doc('getall-3');
+
+                await doc1.set({ name: 'Alice', age: 25 });
+                await doc2.set({ name: 'Bob', age: 30 });
+                await doc3.set({ name: 'Charlie', age: 35 });
+
+                const snapshots = await db.getAll(doc1, doc2, doc3);
+
+                expect(snapshots.length, `getAll returns 3 docs (${mode})`).toBe(3);
+                expect(snapshots[0].exists, `doc1 exists (${mode})`).toBe(true);
+                expect(snapshots[0].id, `doc1 id (${mode})`).toBe('getall-1');
+                expect(snapshots[0].data()?.name, `doc1 name (${mode})`).toBe('Alice');
+                expect(snapshots[1].exists, `doc2 exists (${mode})`).toBe(true);
+                expect(snapshots[1].data()?.name, `doc2 name (${mode})`).toBe('Bob');
+                expect(snapshots[2].exists, `doc3 exists (${mode})`).toBe(true);
+                expect(snapshots[2].data()?.name, `doc3 name (${mode})`).toBe('Charlie');
+            });
+        });
+
+        it('should handle non-existent documents in getAll identically', async () => {
+            await testAllImplementations('getAll with non-existent', async (db, mode) => {
+                const doc1 = db.collection(testCollectionPrefix).doc('getall-exists');
+                const doc2 = db.collection(testCollectionPrefix).doc('getall-nonexistent');
+
+                await doc1.set({ name: 'Exists' });
+
+                const snapshots = await db.getAll(doc1, doc2);
+
+                expect(snapshots.length, `getAll returns 2 docs (${mode})`).toBe(2);
+                expect(snapshots[0].exists, `doc1 exists (${mode})`).toBe(true);
+                expect(snapshots[0].data()?.name, `doc1 name (${mode})`).toBe('Exists');
+                expect(snapshots[1].exists, `doc2 does not exist (${mode})`).toBe(false);
+                expect(snapshots[1].data(), `doc2 data is undefined (${mode})`).toBeUndefined();
+            });
+        });
+
+        it('should handle empty getAll identically', async () => {
+            await testAllImplementations('getAll empty', async (db, mode) => {
+                const snapshots = await db.getAll();
+                expect(snapshots.length, `getAll returns 0 docs (${mode})`).toBe(0);
+            });
+        });
+
+        it('should use getAll in transactions identically', async () => {
+            await testAllImplementations('transaction getAll', async (db, mode) => {
+                const doc1 = db.collection(testCollectionPrefix).doc('tx-getall-1');
+                const doc2 = db.collection(testCollectionPrefix).doc('tx-getall-2');
+
+                await doc1.set({ name: 'Alice', balance: 100 });
+                await doc2.set({ name: 'Bob', balance: 50 });
+
+                await db.runTransaction(async (transaction) => {
+                    const snapshots = await transaction.getAll(doc1, doc2);
+
+                    expect(snapshots.length, `getAll in tx returns 2 (${mode})`).toBe(2);
+                    expect(snapshots[0].data()?.balance, `doc1 balance (${mode})`).toBe(100);
+                    expect(snapshots[1].data()?.balance, `doc2 balance (${mode})`).toBe(50);
+
+                    transaction.update(doc1, { balance: 80 });
+                    transaction.update(doc2, { balance: 70 });
+                });
+
+                const final1 = await doc1.get();
+                const final2 = await doc2.get();
+                expect(final1.data()?.balance, `doc1 final balance (${mode})`).toBe(80);
+                expect(final2.data()?.balance, `doc2 final balance (${mode})`).toBe(70);
+            });
+        });
+    });
+
     describe('Subcollections', () => {
         it('should handle subcollections identically', async () => {
             await testAllImplementations('subcollections', async (db, mode) => {

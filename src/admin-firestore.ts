@@ -246,6 +246,20 @@ class TransactionWrapper implements ITransaction {
         throw new Error('Unsupported reference type for transaction.get');
     }
 
+    async getAll(...documentRefs: IDocumentReference[]): Promise<IDocumentSnapshot[]> {
+        if (documentRefs.length === 0) {
+            return [];
+        }
+        const refs = documentRefs.map((ref) => {
+            if (!(ref instanceof DocumentReferenceWrapper)) {
+                throw new Error('Unsupported document reference for transaction.getAll');
+            }
+            return ref['docRef'];
+        });
+        const snapshots = await this.transaction.getAll(...refs);
+        return snapshots.map((snapshot) => new DocumentSnapshotWrapper(snapshot));
+    }
+
     set(documentRef: IDocumentReference, data: any, options?: SetOptions): ITransaction {
         if (!(documentRef instanceof DocumentReferenceWrapper)) {
             throw new Error('Unsupported document reference for transaction.set');
@@ -292,6 +306,20 @@ class FirestoreDatabaseWrapper implements IFirestoreDatabase {
 
     doc(documentPath: string): IDocumentReference {
         return new DocumentReferenceWrapper(this.firestore.doc(documentPath));
+    }
+
+    async getAll(...documentRefs: IDocumentReference[]): Promise<IDocumentSnapshot[]> {
+        if (documentRefs.length === 0) {
+            return [];
+        }
+        const refs = documentRefs.map((ref) => {
+            if (ref instanceof DocumentReferenceWrapper) {
+                return ref['docRef'];
+            }
+            throw new Error('Unsupported document reference for getAll');
+        });
+        const snapshots = await this.firestore.getAll(...refs);
+        return snapshots.map((snapshot) => new DocumentSnapshotWrapper(snapshot));
     }
 
     collectionGroup(collectionId: string): IQuery {
