@@ -14,6 +14,21 @@ export interface StorageSaveOptions {
     metadata?: StorageFileMetadata;
 }
 
+export interface GetSignedUrlConfig {
+    action: 'read' | 'write' | 'delete' | 'resumable';
+    version?: 'v2' | 'v4';
+    expires: string | number | Date;
+    contentMd5?: string;
+    contentType?: string;
+    responseDisposition?: string;
+    responseType?: string;
+    promptSaveAs?: string;
+    virtualHostedStyle?: boolean;
+    cname?: string;
+    extensionHeaders?: Record<string, string>;
+    queryParams?: Record<string, string>;
+}
+
 export interface IStorage {
     bucket(name?: string): IStorageBucket;
 }
@@ -32,4 +47,5 @@ export interface IStorageFile {
     exists(): Promise<[boolean]>;
     getMetadata(): Promise<[StorageFileMetadata]>;
     createReadStream(): Readable;
+    getSignedUrl(config: GetSignedUrlConfig): Promise<[string]>;
 }

@@ -1,6 +1,6 @@
 import type { Bucket, File } from '@google-cloud/storage';
 import type * as admin from 'firebase-admin';
-import type { IStorage, IStorageBucket, IStorageFile, StorageFileContent, StorageFileMetadata, StorageSaveOptions } from './storage-types';
+import type { IStorage, IStorageBucket, IStorageFile, StorageFileContent, StorageFileMetadata, StorageSaveOptions, GetSignedUrlConfig } from './storage-types';
 import { Readable } from 'node:stream';
 
 class StorageWrapper implements IStorage {
@@ -75,6 +75,10 @@ class StorageFileWrapper implements IStorageFile {
 
     createReadStream(): Readable {
         return this.file.createReadStream();
+    }
+
+    async getSignedUrl(config: GetSignedUrlConfig): Promise<[string]> {
+        return this.file.getSignedUrl(config);
     }
 }
 

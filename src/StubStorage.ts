@@ -1,6 +1,6 @@
 import { Buffer } from 'node:buffer';
 import { Readable } from 'node:stream';
-import type { IStorage, IStorageBucket, IStorageFile, StorageFileContent, StorageFileMetadata, StorageSaveOptions } from './storage-types';
+import type { IStorage, IStorageBucket, IStorageFile, StorageFileContent, StorageFileMetadata, StorageSaveOptions, GetSignedUrlConfig } from './storage-types';
 
 export interface SeedFileOptions extends StorageSaveOptions {
     bucket?: string;
@@ -196,6 +196,26 @@ export class StubStorageFile implements IStorageFile {
         stream.push(record.content);
         stream.push(null); // No more data
         return stream;
+    }
+
+    async getSignedUrl(config: GetSignedUrlConfig): Promise<[string]> {
+        const record = this.storage.getFile(this.bucket.name, this.path);
+        if (!record) {
+            throw new Error(`File ${this.path} does not exist in bucket ${this.bucket.name}`);
+        }
+
+        // Generate a fake signed URL for testing purposes
+        const version = config.version ?? 'v4';
+        const expiresParam = typeof config.expires === 'number'
+            ? config.expires
+            : typeof config.expires === 'string'
+            ? new Date(config.expires).getTime()
+            : config.expires.getTime();
+
+        const baseUrl = `https://storage.googleapis.com/${this.bucket.name}/${encodeURIComponent(this.path)}`;
+        const signedUrl = `${baseUrl}?X-Goog-Algorithm=GOOG4-RSA-SHA256&X-Goog-Credential=test-stub&X-Goog-Date=20260128T000000Z&X-Goog-Expires=${expiresParam}&X-Goog-SignedHeaders=host&X-Goog-Signature=stub-signature-${version}`;
+
+        return [signedUrl];
     }
 }
 

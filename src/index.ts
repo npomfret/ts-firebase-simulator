@@ -19,7 +19,7 @@ export { createCloudTasksClient } from './admin-cloudtasks';
 export { createFirestoreDatabase } from './admin-firestore';
 export { createStorage } from './admin-storage';
 export type { ICloudTasksClient } from './cloudtasks-types';
-export type { IStorage, IStorageBucket, IStorageFile, StorageFileContent, StorageFileMetadata, StorageSaveOptions } from './storage-types';
+export type { GetSignedUrlConfig, IStorage, IStorageBucket, IStorageFile, StorageFileContent, StorageFileMetadata, StorageSaveOptions } from './storage-types';
 export { type EnqueuedTask, StubCloudTasksClient } from './StubCloudTasksClient';
 export { type FirestoreTriggerChange, type FirestoreTriggerChangeHandler, type FirestoreTriggerEventType, type FirestoreTriggerHandlers, StubFirestoreDatabase } from './StubFirestoreDatabase';
 export { type SeedFileOptions, type StoredFileSnapshot, StubStorage, StubStorageBucket, StubStorageFile, type StubStorageOptions } from './StubStorage';

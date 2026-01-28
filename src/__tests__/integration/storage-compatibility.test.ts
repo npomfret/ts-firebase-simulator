@@ -505,6 +505,111 @@ describe('Storage Stub Compatibility - Integration Test', () => {
         });
     });
 
+    describe('Signed URLs', () => {
+        it('should generate signed URLs without error', async () => {
+            await testAllImplementations('signed url generation', async (bucket, mode) => {
+                const filePath = `${testPathPrefix}/signed-url-${mode}.txt`;
+                const content = 'Content for signed URL';
+
+                const file = bucket.file(filePath);
+                await file.save(content);
+
+                const expires = Date.now() + 1000 * 60 * 60; // 1 hour from now
+                const config = {
+                    action: 'read' as const,
+                    expires,
+                };
+
+                const [signedUrl] = await file.getSignedUrl(config);
+
+                expect(signedUrl, `Signed URL returned (${mode})`).toBeDefined();
+                expect(typeof signedUrl, `Signed URL is string (${mode})`).toBe('string');
+                expect(signedUrl.length, `Signed URL not empty (${mode})`).toBeGreaterThan(0);
+                expect(signedUrl, `Signed URL is valid URL (${mode})`).toMatch(/^https?:\/\//);
+            });
+        });
+
+        it('should generate signed URLs with different actions', async () => {
+            await testAllImplementations('signed url actions', async (bucket, mode) => {
+                const filePath = `${testPathPrefix}/signed-url-actions-${mode}.txt`;
+                const file = bucket.file(filePath);
+                await file.save('test content');
+
+                const expires = Date.now() + 1000 * 60 * 60;
+                const actions: Array<'read' | 'write' | 'delete' | 'resumable'> = ['read', 'write', 'delete', 'resumable'];
+
+                for (const action of actions) {
+                    const [signedUrl] = await file.getSignedUrl({
+                        action,
+                        expires,
+                    });
+                    expect(signedUrl, `Signed URL for ${action} action (${mode})`).toBeDefined();
+                    expect(typeof signedUrl, `Signed URL for ${action} is string (${mode})`).toBe('string');
+                }
+            });
+        });
+
+        it('should generate signed URLs with different expiration formats', async () => {
+            await testAllImplementations('signed url expiration formats', async (bucket, mode) => {
+                const filePath = `${testPathPrefix}/signed-url-expires-${mode}.txt`;
+                const file = bucket.file(filePath);
+                await file.save('test content');
+
+                // Test with Date object
+                const dateExpires = new Date(Date.now() + 1000 * 60 * 60);
+                const [urlWithDate] = await file.getSignedUrl({
+                    action: 'read',
+                    expires: dateExpires,
+                });
+                expect(urlWithDate, `Signed URL with Date (${mode})`).toBeDefined();
+
+                // Test with number (timestamp)
+                const numberExpires = Date.now() + 1000 * 60 * 60;
+                const [urlWithNumber] = await file.getSignedUrl({
+                    action: 'read',
+                    expires: numberExpires,
+                });
+                expect(urlWithNumber, `Signed URL with number (${mode})`).toBeDefined();
+
+                // Test with string
+                const stringExpires = new Date(Date.now() + 1000 * 60 * 60).toISOString();
+                const [urlWithString] = await file.getSignedUrl({
+                    action: 'read',
+                    expires: stringExpires,
+                });
+                expect(urlWithString, `Signed URL with string (${mode})`).toBeDefined();
+            });
+        });
+
+        it('should generate signed URLs with content type', async () => {
+            await testAllImplementations('signed url with content type', async (bucket, mode) => {
+                const filePath = `${testPathPrefix}/signed-url-content-type-${mode}.json`;
+                const file = bucket.file(filePath);
+                await file.save('{"test": "data"}');
+
+                const [signedUrl] = await file.getSignedUrl({
+                    action: 'read',
+                    expires: Date.now() + 1000 * 60 * 60,
+                    contentType: 'application/json',
+                });
+
+                expect(signedUrl, `Signed URL with content type (${mode})`).toBeDefined();
+                expect(typeof signedUrl, `Signed URL is string (${mode})`).toBe('string');
+            });
+        });
+
+        it('should throw error when generating signed URL for non-existent file in stub', async () => {
+            // This test only applies to stub since Firebase allows generating signed URLs for non-existent files
+            const filePath = `${testPathPrefix}/non-existent-signed-url.txt`;
+            const file = stubBucket.file(filePath);
+
+            await expect(file.getSignedUrl({
+                action: 'read',
+                expires: Date.now() + 1000 * 60 * 60,
+            })).rejects.toThrow(`File ${filePath} does not exist in bucket ${stubBucket.name}`);
+        });
+    });
+
     describe('Stub-Specific Features', () => {
         it('should track file size correctly', async () => {
             const filePath = `${testPathPrefix}/size-test.txt`;
