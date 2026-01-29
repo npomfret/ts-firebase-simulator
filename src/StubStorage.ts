@@ -204,18 +204,41 @@ export class StubStorageFile implements IStorageFile {
             throw new Error(`File ${this.path} does not exist in bucket ${this.bucket.name}`);
         }
 
-        // Generate a fake signed URL for testing purposes
-        const version = config.version ?? 'v4';
-        const expiresParam = typeof config.expires === 'number'
+        // Generate a mock signed URL that looks realistic but doesn't require signing
+        const bucket = this.bucket.name;
+        const filePath = this.name;
+
+        // Use config.expires to create a deterministic expiry timestamp
+        const expiryMs = typeof config.expires === 'number'
             ? config.expires
             : typeof config.expires === 'string'
             ? new Date(config.expires).getTime()
             : config.expires.getTime();
 
-        const baseUrl = `https://storage.googleapis.com/${this.bucket.name}/${encodeURIComponent(this.path)}`;
-        const signedUrl = `${baseUrl}?X-Goog-Algorithm=GOOG4-RSA-SHA256&X-Goog-Credential=test-stub&X-Goog-Date=20260128T000000Z&X-Goog-Expires=${expiresParam}&X-Goog-SignedHeaders=host&X-Goog-Signature=stub-signature-${version}`;
+        const now = Date.now();
+        const expiresSeconds = Math.max(0, Math.floor((expiryMs - now) / 1000));
 
-        return [signedUrl];
+        // Create a mock signature (deterministic based on path + expiry + action)
+        const signatureInput = `${bucket}/${filePath}/${expiryMs}/${config.action}`;
+        const mockSignature = Buffer.from(signatureInput)
+            .toString('base64')
+            .replace(/[+/=]/g, ''); // URL-safe
+
+        // Format the date for X-Goog-Date (current time in ISO 8601 basic format)
+        const googDate = new Date(now).toISOString().replace(/[-:]/g, '').split('.')[0] + 'Z';
+
+        // Return a mock URL that matches Google Cloud Storage signed URL format
+        const mockUrl = [
+            `https://storage.googleapis.com/${bucket}/${encodeURIComponent(filePath)}`,
+            `?X-Goog-Algorithm=GOOG4-RSA-SHA256`,
+            `&X-Goog-Credential=emulator-stub@test.iam.gserviceaccount.com/${googDate.slice(0, 8)}/auto/storage/goog4_request`,
+            `&X-Goog-Date=${googDate}`,
+            `&X-Goog-Expires=${expiresSeconds}`,
+            `&X-Goog-SignedHeaders=host`,
+            `&X-Goog-Signature=${mockSignature}`,
+        ].join('');
+
+        return [mockUrl];
     }
 }
 

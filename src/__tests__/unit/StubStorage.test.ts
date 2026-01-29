@@ -218,6 +218,105 @@ describe('StubStorage', () => {
                 expires: Date.now() + 1000 * 60 * 60,
             })).rejects.toThrow('File non-existent-signed.txt does not exist in bucket default-test-bucket');
         });
+
+        it('getSignedUrl() generates deterministic URLs for same inputs', async () => {
+            const file = storage.bucket().file('deterministic.txt');
+            await file.save('content');
+
+            // Use a fixed expiry time to ensure determinism
+            const fixedExpiry = new Date('2026-12-31T23:59:59Z');
+
+            const [url1] = await file.getSignedUrl({
+                action: 'read',
+                expires: fixedExpiry,
+            });
+
+            // Small delay to ensure Date.now() might differ between calls
+            await new Promise(resolve => setTimeout(resolve, 10));
+
+            const [url2] = await file.getSignedUrl({
+                action: 'read',
+                expires: fixedExpiry,
+            });
+
+            // Extract signatures from both URLs
+            const sig1 = url1.match(/X-Goog-Signature=([^&]+)/)?.[1];
+            const sig2 = url2.match(/X-Goog-Signature=([^&]+)/)?.[1];
+
+            // Signatures should be identical since expiry and action are the same
+            expect(sig1).toBe(sig2);
+        });
+
+        it('getSignedUrl() generates different URLs for different expiry times', async () => {
+            const file = storage.bucket().file('different-expiry.txt');
+            await file.save('content');
+
+            const [url1] = await file.getSignedUrl({
+                action: 'read',
+                expires: new Date('2026-12-31T23:59:59Z'),
+            });
+
+            const [url2] = await file.getSignedUrl({
+                action: 'read',
+                expires: new Date('2027-01-01T00:00:00Z'),
+            });
+
+            // Extract signatures from both URLs
+            const sig1 = url1.match(/X-Goog-Signature=([^&]+)/)?.[1];
+            const sig2 = url2.match(/X-Goog-Signature=([^&]+)/)?.[1];
+
+            // Signatures should be different since expiry times differ
+            expect(sig1).not.toBe(sig2);
+        });
+
+        it('getSignedUrl() generates different URLs for different actions', async () => {
+            const file = storage.bucket().file('different-action.txt');
+            await file.save('content');
+
+            const fixedExpiry = new Date('2026-12-31T23:59:59Z');
+
+            const [readUrl] = await file.getSignedUrl({
+                action: 'read',
+                expires: fixedExpiry,
+            });
+
+            const [writeUrl] = await file.getSignedUrl({
+                action: 'write',
+                expires: fixedExpiry,
+            });
+
+            // Extract signatures from both URLs
+            const readSig = readUrl.match(/X-Goog-Signature=([^&]+)/)?.[1];
+            const writeSig = writeUrl.match(/X-Goog-Signature=([^&]+)/)?.[1];
+
+            // Signatures should be different since actions differ
+            expect(readSig).not.toBe(writeSig);
+        });
+
+        it('getSignedUrl() includes proper URL parameters matching GCS format', async () => {
+            const file = storage.bucket().file('format-check.txt');
+            await file.save('content');
+
+            const [url] = await file.getSignedUrl({
+                action: 'read',
+                expires: Date.now() + 1000 * 60 * 60,
+            });
+
+            // Check that all required parameters are present
+            expect(url).toContain('X-Goog-Algorithm=GOOG4-RSA-SHA256');
+            expect(url).toContain('X-Goog-Credential=');
+            expect(url).toContain('X-Goog-Date=');
+            expect(url).toContain('X-Goog-Expires=');
+            expect(url).toContain('X-Goog-SignedHeaders=host');
+            expect(url).toContain('X-Goog-Signature=');
+
+            // Verify X-Goog-Expires is in seconds (should be a reasonable value)
+            const expiresMatch = url.match(/X-Goog-Expires=(\d+)/);
+            expect(expiresMatch).toBeTruthy();
+            const expiresSeconds = Number.parseInt(expiresMatch![1], 10);
+            expect(expiresSeconds).toBeGreaterThan(0);
+            expect(expiresSeconds).toBeLessThanOrEqual(3600); // Should be <= 1 hour in seconds
+        });
     });
 
     describe('IStorageBucket', () => {
