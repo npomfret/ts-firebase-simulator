@@ -23,21 +23,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `GetSignedUrlConfig` interface with support for read/write/delete/resumable actions
 - Comprehensive unit and integration tests for signed URL generation
 
-## [0.9.0]
+## [0.9.0] - (Previous release)
 
-Previous releases (see git history)
+## [0.8.0] - (Previous release)
 
-## [0.8.0]
+## [0.7.0] - (Previous release)
 
-Previous releases (see git history)
-
-## [0.7.0]
-
-Previous releases (see git history)
-
-## [0.6.0]
-
-Previous releases (see git history)
+## [0.6.0] - (Previous release)
 
 [Unreleased]: https://github.com/npomfret/ts-firebase-simulator/compare/v0.10.0...HEAD
 [0.10.0]: https://github.com/npomfret/ts-firebase-simulator/releases/tag/v0.10.0
