@@ -120,12 +120,18 @@ interface IStorage {
 interface IStorageBucket {
     readonly name: string;
     file(path: string): IStorageFile;
+    getFiles(options?: { prefix?: string }): Promise<[IStorageFile[]]>;
 }
 
 interface IStorageFile {
+    readonly name: string;
     save(data: StorageFileContent, options?: StorageSaveOptions): Promise<void>;
     makePublic(): Promise<void>;
     delete(): Promise<void>;
+    exists(): Promise<[boolean]>;
+    getMetadata(): Promise<[StorageFileMetadata]>;
+    createReadStream(): Readable;
+    getSignedUrl(config: GetSignedUrlConfig): Promise<[string]>;
 }
 ```
 
@@ -152,9 +158,13 @@ In-memory Cloud Tasks:
 ### StubStorage
 
 In-memory Firebase Storage:
-- File save/delete
-- Metadata support
-- File listing for assertions (`getAllFiles()`, `getFile()`)
+- File save/delete operations
+- Metadata support (`getMetadata()`)
+- File existence checks (`exists()`)
+- Read streams (`createReadStream()`)
+- Signed URL generation (`getSignedUrl()`) - generates mock URLs without requiring credentials
+- File listing (`getFiles()`, `getAllFiles()`, `getFile()`)
+- Test utilities (`seedFile()`, `clear()`)
 
 ## Production Wrappers
 
