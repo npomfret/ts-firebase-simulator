@@ -28,7 +28,7 @@ export interface ICloudTasksClient {
                 httpMethod: 'POST' | 'GET' | 'PUT' | 'DELETE';
                 url: string;
                 headers?: Record<string, string>;
-                body?: string;
+                body?: string | Uint8Array;
                 /** OIDC token for authenticating the task request */
                 oidcToken?: OidcToken;
             };
