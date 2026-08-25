@@ -6,16 +6,26 @@ import jetbrains.buildServer.configs.kotlin.triggers.vcs
  * TeamCity settings for ts-firebase-simulator, on ci.snowmonkey.co.uk.
  *
  * The three agents (funmax-mac-1/2/3) all live on a single Mac and already
- * carry what this project needs: Node 22 first on PATH via nvm, and OpenJDK 25,
- * which is what the Firebase emulators run on. Nothing else has to be installed
- * on that box -- firebase-tools is a devDependency, so `npm ci` supplies it.
+ * carry what this project needs: Node 22, first on PATH via nvm. Nothing has
+ * to be installed on that box for this build.
+ *
+ * The emulator compatibility suites under src/__tests__/integration are
+ * deliberately NOT here. They need the Firebase emulators, and the emulators
+ * are not something we want starting on the shared Mac -- they want a JVM and
+ * they bind fixed ports (firestore 8080, storage 9199, ui 4000) that all three
+ * agents would contend for. Those tests are run locally, from time to time,
+ * with `npm run test:with-emulator`. Please do not add a build configuration
+ * that runs them.
  */
 
 version = "2026.1"
 
-val emulatorLock = "firebase-emulators"
+val buildAndUnit = BuildType {
+    id("BuildAndUnit")
+    name = "Build & Unit"
+    description = "Format, typecheck, bundle and the in-memory unit suite. Starts no " +
+        "emulator and binds no ports, so it can run on any of the three agents at any time."
 
-fun BuildType.onTheMac() {
     maxRunningBuilds = 1
     params {
         param("env.TMPDIR", "%system.teamcity.build.tempDir%")
@@ -23,43 +33,20 @@ fun BuildType.onTheMac() {
     vcs {
         root(DslContext.settingsRoot)
     }
-}
 
-// Because the three agents share one Mac and firebase.json pins the emulator to
-// fixed ports (firestore 8080, storage 9199, ui 4000), two builds starting
-// emulators at once would collide on the ports rather than merely on the CPU.
-// Quota 1 and a write lock, so the second one waits.
-fun BuildType.oneEmulatorSetAtATime() {
-    features {
-        sharedResources {
-            writeLock(emulatorLock)
-        }
-    }
-}
-
-// Generic rather than the typed builder, following SuperFunMaxMusic: a wrong
-// parameter finds no reports and says so, where a wrong symbol stops the script
-// compiling.
-fun BuildType.keepsWhatVitestSaid(report: String) {
-    artifactRules = "test-reports/$report => test-reports"
+    artifactRules = "test-reports/unit.xml => test-reports"
+    // Generic rather than the typed builder, following SuperFunMaxMusic: a wrong
+    // parameter finds no reports and says so, where a wrong symbol stops the
+    // script compiling.
     features {
         feature {
             type = "xml-report-plugin"
             param("xmlReportParsing.reportType", "junit")
-            param("xmlReportParsing.reportDirs", "+:test-reports/$report")
+            param("xmlReportParsing.reportDirs", "+:test-reports/unit.xml")
             param("xmlReportParsing.verboseOutput", "true")
         }
     }
-}
 
-val buildAndUnit = BuildType {
-    id("BuildAndUnit")
-    name = "Build & Unit"
-    description = "Format, typecheck, bundle and the in-memory unit suite. Starts no " +
-        "emulator, so it holds no lock and runs beside the integration leg on an agent " +
-        "that would otherwise be idle."
-    onTheMac()
-    keepsWhatVitestSaid("unit.xml")
     steps {
         script {
             name = "install"
@@ -83,6 +70,7 @@ val buildAndUnit = BuildType {
                 "--reporter=default --reporter=junit --outputFile.junit=test-reports/unit.xml"
         }
     }
+
     failureConditions {
         executionTimeoutMin = 15
     }
@@ -94,49 +82,12 @@ val buildAndUnit = BuildType {
     }
 }
 
-val integration = BuildType {
-    id("Integration")
-    name = "Integration"
-    description = "The compatibility suites against the Firestore and Storage emulators. " +
-        "emulators:exec is what sets FIRESTORE_EMULATOR_HOST and " +
-        "FIREBASE_STORAGE_EMULATOR_HOST, and those are what switch the emulator leg of " +
-        "those suites on -- without them the suites quietly run the stub leg alone and " +
-        "pass without proving anything."
-    onTheMac()
-    oneEmulatorSetAtATime()
-    keepsWhatVitestSaid("integration.xml")
-    steps {
-        script {
-            name = "install"
-            scriptContent = "npm ci"
-        }
-        script {
-            name = "integration"
-            // demo- prefixed project ids never reach a real GCP project.
-            scriptContent = "npx firebase emulators:exec " +
-                "--project demo-test-project " +
-                "--only firestore,storage " +
-                "\"npx vitest run src/__tests__/integration " +
-                "--reporter=default --reporter=junit --outputFile.junit=test-reports/integration.xml\""
-        }
-    }
-    failureConditions {
-        executionTimeoutMin = 25
-    }
-    // Paused, and deliberately given no trigger: this leg must not start
-    // emulators on the shared Mac. Both are declared here rather than clicked
-    // in the UI, because versioned settings would otherwise sync the paused
-    // flag away on the next commit. Unpause and restore the vcs trigger only
-    // when the emulators are wanted on that box.
-    paused = true
-}
-
 project {
     description = "TypeScript-first in-memory Firebase stubs for unit testing."
 
-    // The server-wide default keeps everything forever. dist is small, but there is
-    // no reason to keep every bundle; the test history is what the Tests tab and
-    // flaky detection are built on, so it outlives the artifacts.
+    // The server-wide default keeps everything forever. The bundle is small but
+    // there is no reason to keep every one; the test history is what the Tests
+    // tab and flaky detection are built on, so it outlives the artifacts.
     cleanup {
         baseRule {
             artifacts(days = 7)
@@ -145,15 +96,4 @@ project {
     }
 
     buildType(buildAndUnit)
-    buildType(integration)
-
-    features {
-        feature {
-            id = "FIREBASE_EMULATORS_LOCK"
-            type = "JetBrains.SharedResources"
-            param("name", emulatorLock)
-            param("type", "quoted")
-            param("quota", "1")
-        }
-    }
 }
