@@ -216,7 +216,9 @@ describe('StubStorage', () => {
             await expect(file.getSignedUrl({
                 action: 'read',
                 expires: Date.now() + 1000 * 60 * 60,
-            })).rejects.toThrow('File non-existent-signed.txt does not exist in bucket default-test-bucket');
+            }))
+                .rejects
+                .toThrow('File non-existent-signed.txt does not exist in bucket default-test-bucket');
         });
 
         it('getSignedUrl() generates deterministic URLs for same inputs', async () => {

@@ -1,7 +1,7 @@
 import type { Bucket, File } from '@google-cloud/storage';
 import type * as admin from 'firebase-admin';
-import type { IStorage, IStorageBucket, IStorageFile, StorageFileContent, StorageFileMetadata, StorageSaveOptions, GetSignedUrlConfig } from './storage-types';
 import { Readable } from 'node:stream';
+import type { GetSignedUrlConfig, IStorage, IStorageBucket, IStorageFile, StorageFileContent, StorageFileMetadata, StorageSaveOptions } from './storage-types';
 
 class StorageWrapper implements IStorage {
     constructor(private readonly storage: admin.storage.Storage) {}
@@ -22,7 +22,7 @@ class StorageBucketWrapper implements IStorageBucket {
         return new StorageFileWrapper(this.bucket.file(path));
     }
 
-    async getFiles(options?: { prefix?: string }): Promise<[IStorageFile[]]> {
+    async getFiles(options?: { prefix?: string; }): Promise<[IStorageFile[]]> {
         const [files] = await this.bucket.getFiles(options);
         return [files.map((file) => new StorageFileWrapper(file))];
     }

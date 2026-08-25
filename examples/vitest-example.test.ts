@@ -2,8 +2,8 @@
  * Example Vitest test file
  */
 
-import { beforeEach, describe, expect, it } from 'vitest';
 import { StubFirestoreDatabase } from 'ts-firebase-simulator';
+import { beforeEach, describe, expect, it } from 'vitest';
 
 describe('UserRepository', () => {
     // In this example, use StubFirestoreDatabase directly (not the interface) to access test helper methods like seed()
@@ -32,7 +32,8 @@ describe('UserRepository', () => {
         db.seed('users/u2', { name: 'Bob', role: 'user' });
         db.seed('users/u3', { name: 'Charlie', role: 'admin' });
 
-        const admins = await db.collection('users')
+        const admins = await db
+            .collection('users')
             .where('role', '==', 'admin')
             .get();
 

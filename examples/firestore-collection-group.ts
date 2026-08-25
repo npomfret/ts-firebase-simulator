@@ -17,7 +17,8 @@ async function main() {
     console.log('All comments:', allComments.docs.map((d) => d.data().text));
 
     // Filter collection group
-    const aliceComments = await db.collectionGroup('comments')
+    const aliceComments = await db
+        .collectionGroup('comments')
         .where('author', '==', 'Alice')
         .get();
     console.log('Alice comments:', aliceComments.docs.map((d) => d.data().text));

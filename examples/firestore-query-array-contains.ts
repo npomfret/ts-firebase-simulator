@@ -11,13 +11,15 @@ async function main() {
     db.seed('posts/p3', { title: 'Advanced', tags: ['guide', 'expert'] });
 
     // Find posts with 'intro' tag
-    const introPosts = await db.collection('posts')
+    const introPosts = await db
+        .collection('posts')
         .where('tags', 'array-contains', 'intro')
         .get();
     console.log('Intro posts:', introPosts.docs.map((d) => d.data().title));
 
     // Find posts with any of these tags
-    const guidesOrIntros = await db.collection('posts')
+    const guidesOrIntros = await db
+        .collection('posts')
         .where('tags', 'array-contains-any', ['intro', 'expert'])
         .get();
     console.log('Guides or intros:', guidesOrIntros.docs.map((d) => d.data().title));

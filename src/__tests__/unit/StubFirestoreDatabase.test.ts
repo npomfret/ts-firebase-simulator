@@ -169,7 +169,9 @@ describe('StubFirestoreDatabase - Example Usage', () => {
             await expect(db.runTransaction(async (transaction) => {
                 transaction.set(docRef1, { name: 'Alice Updated' });
                 await transaction.get(docRef2);
-            })).rejects.toThrow('Firestore transactions require all reads to be executed before all writes.');
+            }))
+                .rejects
+                .toThrow('Firestore transactions require all reads to be executed before all writes.');
         });
     });
 
@@ -291,7 +293,9 @@ describe('StubFirestoreDatabase - Example Usage', () => {
             await expect(db.runTransaction(async (transaction) => {
                 transaction.set(doc1, { name: 'Alice Updated' });
                 await transaction.getAll(doc1, doc2);
-            })).rejects.toThrow('Firestore transactions require all reads to be executed before all writes.');
+            }))
+                .rejects
+                .toThrow('Firestore transactions require all reads to be executed before all writes.');
         });
     });
 

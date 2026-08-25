@@ -2,12 +2,7 @@
  * Defining triggers that work in both production and tests
  */
 
-import {
-    type FirestoreTriggerEvent,
-    registerTriggerWithStub,
-    StubFirestoreDatabase,
-    toProdTrigger,
-} from 'ts-firebase-simulator';
+import { type FirestoreTriggerEvent, registerTriggerWithStub, StubFirestoreDatabase, toProdTrigger } from 'ts-firebase-simulator';
 
 // Define a trigger
 const userTrigger = toProdTrigger({

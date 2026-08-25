@@ -19,7 +19,8 @@ async function main() {
     console.log('Price > 12:', expensive.docs.map((d) => d.data().name));
 
     // Chained where clauses
-    const cheapTools = await db.collection('products')
+    const cheapTools = await db
+        .collection('products')
         .where('category', '==', 'tools')
         .where('price', '<', 12)
         .get();

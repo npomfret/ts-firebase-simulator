@@ -36,7 +36,7 @@ export interface IStorage {
 export interface IStorageBucket {
     readonly name: string;
     file(path: string): IStorageFile;
-    getFiles(options?: { prefix?: string }): Promise<[IStorageFile[]]>;
+    getFiles(options?: { prefix?: string; }): Promise<[IStorageFile[]]>;
 }
 
 export interface IStorageFile {

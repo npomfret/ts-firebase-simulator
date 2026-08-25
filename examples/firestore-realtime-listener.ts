@@ -17,7 +17,8 @@ async function main() {
     });
 
     // Listen to a query
-    const unsubscribeQuery = db.collection('users')
+    const unsubscribeQuery = db
+        .collection('users')
         .where('status', '==', 'active')
         .onSnapshot((snapshot) => {
             console.log('Active users:', snapshot.docs.map((d) => d.data().name));

@@ -11,13 +11,15 @@ async function main() {
     db.seed('users/u3', { name: 'Charlie', status: 'pending' });
 
     // Find users with status in list
-    const activeOrPending = await db.collection('users')
+    const activeOrPending = await db
+        .collection('users')
         .where('status', 'in', ['active', 'pending'])
         .get();
     console.log('Active or pending:', activeOrPending.docs.map((d) => d.data().name));
 
     // Find users with status not in list
-    const notInactive = await db.collection('users')
+    const notInactive = await db
+        .collection('users')
         .where('status', 'not-in', ['inactive'])
         .get();
     console.log('Not inactive:', notInactive.docs.map((d) => d.data().name));

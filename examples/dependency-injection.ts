@@ -2,11 +2,7 @@
  * Dependency injection pattern for testable services
  */
 
-import {
-    createFirestoreDatabase,
-    type IFirestoreDatabase,
-    StubFirestoreDatabase,
-} from 'ts-firebase-simulator';
+import { createFirestoreDatabase, type IFirestoreDatabase, StubFirestoreDatabase } from 'ts-firebase-simulator';
 
 // Service that depends on the interface, not the implementation
 class UserService {

@@ -121,7 +121,7 @@ describe('Storage Stub Compatibility - Integration Test', () => {
 
     afterAll(async () => {
         // Clean up test files from emulator and real storage
-        const cleanups: Array<{ storage: ReturnType<typeof getStorage>; mode: string }> = [];
+        const cleanups: Array<{ storage: ReturnType<typeof getStorage>; mode: string; }> = [];
 
         if (emulatorAvailable) {
             cleanups.push({ storage: getStorageForMode('emulator'), mode: 'emulator' });
@@ -461,11 +461,15 @@ describe('Storage Stub Compatibility - Integration Test', () => {
                     // Firebase's createReadStream() for non-existent files will error on 'data' event
                     // or 'error' event before any data.
                     const stream = file.createReadStream();
-                    await expect(new Promise((resolve, reject) => {
-                        stream.on('data', () => { });
-                        stream.on('error', reject);
-                        stream.on('end', resolve);
-                    })).rejects.toThrow();
+                    await expect(
+                        new Promise((resolve, reject) => {
+                            stream.on('data', () => {});
+                            stream.on('error', reject);
+                            stream.on('end', resolve);
+                        }),
+                    )
+                        .rejects
+                        .toThrow();
                 }
             });
         });
@@ -606,7 +610,9 @@ describe('Storage Stub Compatibility - Integration Test', () => {
             await expect(file.getSignedUrl({
                 action: 'read',
                 expires: Date.now() + 1000 * 60 * 60,
-            })).rejects.toThrow(`File ${filePath} does not exist in bucket ${stubBucket.name}`);
+            }))
+                .rejects
+                .toThrow(`File ${filePath} does not exist in bucket ${stubBucket.name}`);
         });
     });
 

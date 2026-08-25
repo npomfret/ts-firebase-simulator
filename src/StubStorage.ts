@@ -1,6 +1,6 @@
 import { Buffer } from 'node:buffer';
 import { Readable } from 'node:stream';
-import type { IStorage, IStorageBucket, IStorageFile, StorageFileContent, StorageFileMetadata, StorageSaveOptions, GetSignedUrlConfig } from './storage-types';
+import type { GetSignedUrlConfig, IStorage, IStorageBucket, IStorageFile, StorageFileContent, StorageFileMetadata, StorageSaveOptions } from './storage-types';
 
 export interface SeedFileOptions extends StorageSaveOptions {
     bucket?: string;
@@ -61,7 +61,7 @@ export class StubStorage implements IStorage {
         return result;
     }
 
-    getFiles(bucketName: string, options?: { prefix?: string }): StoredFileSnapshot[] {
+    getFiles(bucketName: string, options?: { prefix?: string; }): StoredFileSnapshot[] {
         const results: StoredFileSnapshot[] = [];
         for (const record of this.files.values()) {
             if (record.bucket === bucketName) {
@@ -140,7 +140,7 @@ export class StubStorageBucket implements IStorageBucket {
         return new StubStorageFile(this.storage, this, normalizePath(path));
     }
 
-    async getFiles(options?: { prefix?: string }): Promise<[StubStorageFile[]]> {
+    async getFiles(options?: { prefix?: string; }): Promise<[StubStorageFile[]]> {
         const files = this.storage.getFiles(this.bucketName, options);
         return [files.map((f) => new StubStorageFile(this.storage, this, f.path))];
     }
@@ -220,7 +220,8 @@ export class StubStorageFile implements IStorageFile {
 
         // Create a mock signature (deterministic based on path + expiry + action)
         const signatureInput = `${bucket}/${filePath}/${expiryMs}/${config.action}`;
-        const mockSignature = Buffer.from(signatureInput)
+        const mockSignature = Buffer
+            .from(signatureInput)
             .toString('base64')
             .replace(/[+/=]/g, ''); // URL-safe
 
@@ -236,7 +237,8 @@ export class StubStorageFile implements IStorageFile {
             `&X-Goog-Expires=${expiresSeconds}`,
             `&X-Goog-SignedHeaders=host`,
             `&X-Goog-Signature=${mockSignature}`,
-        ].join('');
+        ]
+            .join('');
 
         return [mockUrl];
     }

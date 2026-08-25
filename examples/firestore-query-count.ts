@@ -15,7 +15,8 @@ async function main() {
     console.log('Total products:', allCount.data().count);
 
     // Count with filter
-    const toolsCount = await db.collection('products')
+    const toolsCount = await db
+        .collection('products')
         .where('category', '==', 'tools')
         .count()
         .get();
