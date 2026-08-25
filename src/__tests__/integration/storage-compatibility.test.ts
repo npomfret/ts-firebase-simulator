@@ -148,20 +148,37 @@ describe('Storage Stub Compatibility - Integration Test', () => {
     async function testAllImplementations(
         testName: string,
         testFn: (bucket: IStorageBucket, mode: TestMode, storage: StubStorage | null) => Promise<void>,
+        options: { skipModes?: TestMode[]; } = {},
     ) {
+        const skip = options.skipModes ?? [];
+
         // 1. Stub (always runs)
-        await testFn(stubBucket, 'stub', stubStorage);
+        if (!skip.includes('stub')) {
+            await testFn(stubBucket, 'stub', stubStorage);
+        }
 
         // 2. Emulator (if available)
-        if (emulatorBucket) {
+        if (emulatorBucket && !skip.includes('emulator')) {
             await testFn(emulatorBucket, 'emulator', null);
         }
 
         // 3. Real Firebase (if available)
-        if (realBucket) {
+        if (realBucket && !skip.includes('real')) {
             await testFn(realBucket, 'real', null);
         }
     }
+
+    /*
+     * Signing a URL needs a private key. The emulator app is initialised with a
+     * project id and no credential (see initializeFirebaseApp), so getSignedUrl
+     * has nothing to sign with and throws
+     * `SigningError: Cannot sign data without 'client_email'`. That is a
+     * property of how the emulator is authenticated, not a behaviour the stub
+     * could ever mirror, so the emulator leg of these cases is skipped the same
+     * way the 'real' leg is skipped without a service account. The stub leg
+     * still runs, and the real leg still runs when credentials are present.
+     */
+    const SKIP_EMULATOR_CANNOT_SIGN = { skipModes: ['emulator'] as TestMode[] };
 
     describe('Basic File Operations', () => {
         it('should save and retrieve files identically', async () => {
@@ -530,7 +547,7 @@ describe('Storage Stub Compatibility - Integration Test', () => {
                 expect(typeof signedUrl, `Signed URL is string (${mode})`).toBe('string');
                 expect(signedUrl.length, `Signed URL not empty (${mode})`).toBeGreaterThan(0);
                 expect(signedUrl, `Signed URL is valid URL (${mode})`).toMatch(/^https?:\/\//);
-            });
+            }, SKIP_EMULATOR_CANNOT_SIGN);
         });
 
         it('should generate signed URLs with different actions', async () => {
@@ -550,7 +567,7 @@ describe('Storage Stub Compatibility - Integration Test', () => {
                     expect(signedUrl, `Signed URL for ${action} action (${mode})`).toBeDefined();
                     expect(typeof signedUrl, `Signed URL for ${action} is string (${mode})`).toBe('string');
                 }
-            });
+            }, SKIP_EMULATOR_CANNOT_SIGN);
         });
 
         it('should generate signed URLs with different expiration formats', async () => {
@@ -582,7 +599,7 @@ describe('Storage Stub Compatibility - Integration Test', () => {
                     expires: stringExpires,
                 });
                 expect(urlWithString, `Signed URL with string (${mode})`).toBeDefined();
-            });
+            }, SKIP_EMULATOR_CANNOT_SIGN);
         });
 
         it('should generate signed URLs with content type', async () => {
@@ -599,7 +616,7 @@ describe('Storage Stub Compatibility - Integration Test', () => {
 
                 expect(signedUrl, `Signed URL with content type (${mode})`).toBeDefined();
                 expect(typeof signedUrl, `Signed URL is string (${mode})`).toBe('string');
-            });
+            }, SKIP_EMULATOR_CANNOT_SIGN);
         });
 
         it('should throw error when generating signed URL for non-existent file in stub', async () => {
