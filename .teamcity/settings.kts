@@ -123,12 +123,12 @@ val integration = BuildType {
     failureConditions {
         executionTimeoutMin = 25
     }
-    triggers {
-        vcs {
-            branchFilter = "+:<default>"
-            perCheckinTriggering = true
-        }
-    }
+    // Paused, and deliberately given no trigger: this leg must not start
+    // emulators on the shared Mac. Both are declared here rather than clicked
+    // in the UI, because versioned settings would otherwise sync the paused
+    // flag away on the next commit. Unpause and restore the vcs trigger only
+    // when the emulators are wanted on that box.
+    paused = true
 }
 
 project {
