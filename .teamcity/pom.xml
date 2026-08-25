@@ -1,21 +1,10 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<!--
-  Only needed to compile settings.kts locally or in an IDE. The TeamCity
-  server compiles the DSL itself and does not read this file.
-
-  The repository below sits behind oauth2-proxy (see TEAMCITY-AGENTS.md §9),
-  so a local `mvn compile` needs the SSH tunnel open and this URL pointed at
-  http://localhost:8111/app/dsl-plugins-repository instead.
--->
-<project xmlns="http://maven.apache.org/POM/4.0.0"
-         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+<?xml version="1.0"?>
+<project>
   <modelVersion>4.0.0</modelVersion>
-
+  <name>ts-firebase-simulator Config DSL Script</name>
   <groupId>TsFirebaseSimulator</groupId>
   <artifactId>TsFirebaseSimulator_dsl</artifactId>
   <version>1.0-SNAPSHOT</version>
-  <name>ts-firebase-simulator TeamCity Config DSL Script</name>
 
   <parent>
     <groupId>org.jetbrains.teamcity</groupId>
@@ -42,11 +31,75 @@
 
   <pluginRepositories>
     <pluginRepository>
-      <id>jetbrains-all</id>
+      <id>JetBrains</id>
       <url>https://download.jetbrains.com/teamcity-repository</url>
-      <snapshots>
-        <enabled>true</enabled>
-      </snapshots>
     </pluginRepository>
   </pluginRepositories>
+
+  <build>
+    <sourceDirectory>${basedir}</sourceDirectory>
+    <plugins>
+      <plugin>
+        <artifactId>kotlin-maven-plugin</artifactId>
+        <groupId>org.jetbrains.kotlin</groupId>
+        <version>${kotlin.version}</version>
+
+        <configuration/>
+        <executions>
+          <execution>
+            <id>compile</id>
+            <phase>process-sources</phase>
+            <goals>
+              <goal>compile</goal>
+            </goals>
+          </execution>
+          <execution>
+            <id>test-compile</id>
+            <phase>process-test-sources</phase>
+            <goals>
+              <goal>test-compile</goal>
+            </goals>
+          </execution>
+        </executions>
+      </plugin>
+      <plugin>
+        <groupId>org.jetbrains.teamcity</groupId>
+        <artifactId>teamcity-configs-maven-plugin</artifactId>
+        <version>${teamcity.dsl.version}</version>
+        <configuration>
+          <format>kotlin</format>
+          <dstDir>target/generated-configs</dstDir>
+        </configuration>
+      </plugin>
+    </plugins>
+  </build>
+
+  <dependencies>
+    <dependency>
+      <groupId>org.jetbrains.teamcity</groupId>
+      <artifactId>configs-dsl-kotlin-latest</artifactId>
+      <version>${teamcity.dsl.version}</version>
+      <scope>compile</scope>
+    </dependency>
+    <!-- Supplies the per-plugin DSL extensions, GitVcsRoot among them. -->
+    <dependency>
+      <groupId>org.jetbrains.teamcity</groupId>
+      <artifactId>configs-dsl-kotlin-plugins-latest</artifactId>
+      <version>1.0-SNAPSHOT</version>
+      <type>pom</type>
+      <scope>compile</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.jetbrains.kotlin</groupId>
+      <artifactId>kotlin-stdlib-jdk8</artifactId>
+      <version>${kotlin.version}</version>
+      <scope>compile</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.jetbrains.kotlin</groupId>
+      <artifactId>kotlin-script-runtime</artifactId>
+      <version>${kotlin.version}</version>
+      <scope>compile</scope>
+    </dependency>
+  </dependencies>
 </project>
