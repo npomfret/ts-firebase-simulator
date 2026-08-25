@@ -1,5 +1,6 @@
 import jetbrains.buildServer.configs.kotlin.*
 import jetbrains.buildServer.configs.kotlin.buildSteps.script
+import jetbrains.buildServer.configs.kotlin.triggers.schedule
 import jetbrains.buildServer.configs.kotlin.triggers.vcs
 
 /*
@@ -78,6 +79,23 @@ val buildAndUnit = BuildType {
         vcs {
             branchFilter = "+:<default>"
             perCheckinTriggering = true
+        }
+        // Nightly, and deliberately not withPendingChangesOnly: a night with no
+        // commits is exactly when this earns its keep. Every dependency here is
+        // on a caret range, so `npm ci` can resolve a different tree from one day
+        // to the next without a single line of ours changing, and the agent's
+        // Node comes from an nvm install on a Mac somebody else also uses. A run
+        // that goes red on an untouched tree names that as the cause, which a
+        // push-triggered build never can.
+        schedule {
+            schedulingPolicy = daily {
+                hour = 3
+                minute = 30
+                timezone = "Europe/London"
+            }
+            branchFilter = "+:<default>"
+            triggerBuild = always()
+            withPendingChangesOnly = false
         }
     }
 }
