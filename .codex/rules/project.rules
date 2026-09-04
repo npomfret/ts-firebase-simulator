@@ -1,0 +1,57 @@
+# Codex command rules for this project.
+# Syntax: Starlark. decision precedence: forbidden > prompt > allow.
+# Loads only when this project is trusted.
+
+# ---- git: everything except merge / push / commit ----
+prefix_rule(
+    pattern = ["git"],
+    decision = "allow",
+    justification = "Local git work is unrestricted in this project.",
+)
+
+prefix_rule(
+    pattern = ["git", ["merge", "push", "commit"]],
+    decision = "forbidden",
+    justification = "Merging, pushing and committing are reserved for the human.",
+)
+
+# Global git flags sit between "git" and the subcommand, so exact-prefix
+# matching would miss e.g. `git -C . push`. Route those through a prompt.
+prefix_rule(
+    pattern = ["git", ["-c", "-C", "--git-dir", "--work-tree", "--exec-path", "--namespace", "-P", "--no-pager"]],
+    decision = "prompt",
+    justification = "A global git flag can conceal a blocked subcommand; confirm manually.",
+)
+
+# ---- npm ----
+prefix_rule(
+    pattern = ["npm", ["run", "test", "install", "ci", "exec", "ls", "list", "outdated", "why", "audit"]],
+    decision = "allow",
+    justification = "Run this project's own npm targets.",
+)
+
+# Targets that deploy, publish or destroy state still ask first.
+prefix_rule(
+    pattern = ["npm", "run", ["clean", "indexes:deploy", "release:major", "release:minor", "release:patch", "super-clean", "test:wipe-data"]],
+    decision = "prompt",
+    justification = "This target changes deployed or persistent state.",
+)
+
+prefix_rule(
+    pattern = ["npm", ["publish", "unpublish", "adduser", "login", "logout", "token", "owner", "access", "dist-tag", "deprecate", "version"]],
+    decision = "forbidden",
+    justification = "Registry and release operations are not for the agent.",
+)
+
+# ---- project scripts ----
+prefix_rule(
+    pattern = [["./run-test.sh"]],
+    decision = "allow",
+    justification = "Scripts that ship with this project.",
+)
+
+prefix_rule(
+    pattern = [["./scripts/deploy-indexes.ts", "./scripts/wipe-test-data.ts"]],
+    decision = "prompt",
+    justification = "This script deploys or destroys state; confirm first.",
+)
