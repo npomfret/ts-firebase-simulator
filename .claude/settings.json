@@ -3,7 +3,9 @@
     "defaultMode": "acceptEdits",
     "allow": [
       "Bash(git *)",
-      "Bash(npm run *)"
+      "Bash(npm run *)",
+      "Bash(python3 scripts/teamcity.py *)",
+      "Bash(./scripts/teamcity.py *)"
     ],
     "deny": []
   },
