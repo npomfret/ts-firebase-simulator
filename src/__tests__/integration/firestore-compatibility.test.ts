@@ -265,7 +265,7 @@ describe('Firestore Stub Compatibility - Integration Test', () => {
             if (Date.now() >= deadline) {
                 throw new Error(
                     `Timed out after ${LISTENER_TIMEOUT_MS}ms waiting for ${expected} ${label} snapshot(s) `
-                    + `(${mode}); received ${received.length}`,
+                        + `(${mode}); received ${received.length}`,
                 );
             }
             await new Promise((resolve) => setTimeout(resolve, 10));
