@@ -238,8 +238,38 @@ describe('Firestore Stub Compatibility - Integration Test', () => {
         }
     }
 
-    function waitForListenerFlush(mode: TestMode, delayMs: number = 150): Promise<void> {
-        return new Promise((resolve) => setTimeout(resolve, mode === 'stub' ? 0 : delayMs));
+    // Below LISTENER_TEST_TIMEOUT_MS, so a stalled listener reports which snapshot never
+    // arrived rather than being killed by vitest's generic per-test timeout.
+    const LISTENER_TIMEOUT_MS = 10_000;
+
+    // Real Firestore takes seconds to deliver a listener's first snapshot, and these tests
+    // now wait for each delivery instead of sleeping past it, across every configured mode.
+    // The default 10s testTimeout is not enough headroom.
+    const LISTENER_TEST_TIMEOUT_MS = 45_000;
+
+    /**
+     * Waits until a listener has delivered `expected` snapshots. A fixed sleep after each
+     * mutation is not enough against the emulator or real Firestore, where delivery latency
+     * is unbounded; polling for the count keeps the fast path fast and only pays the wait
+     * when delivery is slow. Late or duplicate snapshots are still caught, because the
+     * callers assert the final total after the last mutation.
+     */
+    async function waitForSnapshots(
+        received: readonly unknown[],
+        expected: number,
+        label: string,
+        mode: TestMode,
+    ): Promise<void> {
+        const deadline = Date.now() + LISTENER_TIMEOUT_MS;
+        while (received.length < expected) {
+            if (Date.now() >= deadline) {
+                throw new Error(
+                    `Timed out after ${LISTENER_TIMEOUT_MS}ms waiting for ${expected} ${label} snapshot(s) `
+                    + `(${mode}); received ${received.length}`,
+                );
+            }
+            await new Promise((resolve) => setTimeout(resolve, 10));
+        }
     }
 
     describe('Basic Document Operations', () => {
@@ -821,16 +851,16 @@ describe('Firestore Stub Compatibility - Integration Test', () => {
                         (error) => errors.push(error),
                     );
 
-                    await waitForListenerFlush(mode);
+                    await waitForSnapshots(snapshots, 1, 'document', mode);
 
                     await docRef.set({ stage: 'created', value: 1 });
-                    await waitForListenerFlush(mode);
+                    await waitForSnapshots(snapshots, 2, 'document', mode);
 
                     await docRef.update({ stage: 'updated', value: 2 });
-                    await waitForListenerFlush(mode);
+                    await waitForSnapshots(snapshots, 3, 'document', mode);
 
                     await docRef.delete();
-                    await waitForListenerFlush(mode);
+                    await waitForSnapshots(snapshots, 4, 'document', mode);
 
                     unsubscribe();
 
@@ -841,7 +871,7 @@ describe('Firestore Stub Compatibility - Integration Test', () => {
                     expect(snapshots[2].data).toEqual({ stage: 'updated', value: 2 });
                     expect(snapshots[3].exists).toBe(false);
                 });
-            });
+            }, LISTENER_TEST_TIMEOUT_MS);
 
             it('should stream filtered query snapshots identically', async () => {
                 await testAllImplementations('query listener', async (db, mode) => {
@@ -888,16 +918,16 @@ describe('Firestore Stub Compatibility - Integration Test', () => {
                             (error) => errors.push(error),
                         );
 
-                    await waitForListenerFlush(mode);
+                    await waitForSnapshots(results, 1, 'query', mode);
 
                     await collection.doc('user-3').set({ name: 'Charlie', city: 'NYC' });
-                    await waitForListenerFlush(mode);
+                    await waitForSnapshots(results, 2, 'query', mode);
 
                     await collection.doc('user-1').update({ city: 'SF' });
-                    await waitForListenerFlush(mode);
+                    await waitForSnapshots(results, 3, 'query', mode);
 
                     await collection.doc('user-2').set({ name: 'Bob', city: 'NYC' });
-                    await waitForListenerFlush(mode);
+                    await waitForSnapshots(results, 4, 'query', mode);
 
                     unsubscribe();
 
@@ -909,7 +939,7 @@ describe('Firestore Stub Compatibility - Integration Test', () => {
                         ['Bob', 'Charlie'],
                     ]);
                 });
-            });
+            }, LISTENER_TEST_TIMEOUT_MS);
         });
     });
 });
