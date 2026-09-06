@@ -1,0 +1,11 @@
+{
+  "project": "TsFirebaseSimulator",
+  "buildTypes": [
+    "BuildAndUnit",
+    "Integration"
+  ],
+  "testLegs": [
+    "BuildAndUnit",
+    "Integration"
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "defaultMode": "acceptEdits",
+    "allow": [
+      "Bash(git *)",
+      "Bash(npm run *)"
+    ],
+    "deny": []
+  },
+  "enabledPlugins": {
+    "task-files@npomfret": true,
+    "teamcity@npomfret": true
+  }
+}
