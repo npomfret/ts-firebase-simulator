@@ -23,7 +23,8 @@
       "ssh *",
       "scp *",
       "rsync *",
-      "python3 scripts/teamcity.py *"
+      "python3 scripts/teamcity.py *",
+      "npm run tc*"
     ],
     "network": {
       "allowedDomains": [
