@@ -20,7 +20,11 @@
       "git ls-remote *",
       "git clone *",
       "gh *",
-      "python3 scripts/teamcity.py *"
+      "python3 scripts/teamcity.py *",
+      "ssh *",
+      "scp *",
+      "rsync *",
+      "npm run deploy*"
     ],
     "network": {
       "allowedDomains": [
