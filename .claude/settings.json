@@ -13,6 +13,15 @@
     "enabled": true,
     "autoAllowBashIfSandboxed": true,
     "allowUnsandboxedCommands": false,
+    "excludedCommands": [
+      "git fetch *",
+      "git pull *",
+      "git push *",
+      "git ls-remote *",
+      "git clone *",
+      "gh *",
+      "python3 scripts/teamcity.py *"
+    ],
     "network": {
       "allowedDomains": [
         "*"
