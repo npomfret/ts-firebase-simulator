@@ -5,3 +5,4 @@ dist/
 .env.*
 service-account-key.json
 test-reports/
+.gitnexus/

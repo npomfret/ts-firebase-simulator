@@ -12,6 +12,11 @@ extends = ":workspace"
 "~/.cache" = "write"
 "~/Library/Caches" = "write"
 "~/Library/Developer/Xcode/DerivedData" = "write"
+"~/.gitnexus" = "write"
 
 [permissions.project.network]
 enabled = true
+
+[mcp_servers.gitnexus]
+command = "npx"
+args = ["gitnexus", "mcp"]
