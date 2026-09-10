@@ -13,6 +13,7 @@ extends = ":workspace"
 "~/Library/Caches" = "write"
 "~/Library/Developer/Xcode/DerivedData" = "write"
 "~/.gitnexus" = "write"
+"~/.docker/buildx" = "write"
 
 [permissions.project.network]
 enabled = true
