@@ -4,12 +4,6 @@
 
 # ---- git: everything except merge / push ----
 prefix_rule(
-    pattern = ["git"],
-    decision = "allow",
-    justification = "Local git work is unrestricted in this project.",
-)
-
-prefix_rule(
     pattern = ["git", ["merge", "push"]],
     decision = "forbidden",
     justification = "Merging and pushing (all remote write operations) are reserved for the human.",
@@ -40,12 +34,6 @@ prefix_rule(
 
 # ---- gh: GitHub CLI ----
 prefix_rule(
-    pattern = ["gh", "issue"],
-    decision = "allow",
-    justification = "Reading and filing issues is expected agent work.",
-)
-
-prefix_rule(
     pattern = ["gh", "issue", "delete"],
     decision = "forbidden",
     justification = "Deleting an issue is not reversible from the CLI.",
@@ -64,12 +52,6 @@ prefix_rule(
 )
 
 # ---- npm ----
-prefix_rule(
-    pattern = ["npm", ["run", "test", "install", "ci", "exec", "ls", "list", "outdated", "why", "audit"]],
-    decision = "allow",
-    justification = "Run this project's own npm targets.",
-)
-
 # Targets that deploy, publish or destroy state still ask first.
 prefix_rule(
     pattern = ["npm", "run", ["clean", "indexes:deploy", "release:major", "release:minor", "release:patch", "super-clean", "test:wipe-data"]],
@@ -84,12 +66,6 @@ prefix_rule(
 )
 
 # ---- project scripts ----
-prefix_rule(
-    pattern = [["./run-test.sh"]],
-    decision = "allow",
-    justification = "Scripts that ship with this project.",
-)
-
 prefix_rule(
     pattern = [["./scripts/deploy-indexes.ts", "./scripts/wipe-test-data.ts"]],
     decision = "prompt",
