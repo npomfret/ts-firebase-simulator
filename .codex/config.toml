@@ -22,3 +22,8 @@ enabled = true
 [mcp_servers.gitnexus]
 command = "npx"
 args = ["gitnexus", "mcp"]
+
+[mcp_servers.webstorm]
+url = "http://127.0.0.1:64542/stream"
+env_http_headers = { IJ_MCP_SERVER_PROJECT_PATH = "PWD" }
+disabled_tools = ["execute_terminal_command", "execute_run_configuration", "execute_tool", "run_inspection_kts", "build_project", "apply_patch", "create_new_file", "reformat_file"]
