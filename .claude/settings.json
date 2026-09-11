@@ -33,12 +33,16 @@
         "~/.npm",
         "~/.cache",
         "~/Library/Caches",
+        "~/Library/pnpm",
         "~/Library/Developer/Xcode/DerivedData",
         "~/.gitnexus",
         "~/.docker/buildx",
         "/var/folders"
       ]
     }
+  },
+  "env": {
+    "NODE_USE_ENV_PROXY": "1"
   },
   "attribution": {
     "commit": "",
