@@ -21,40 +21,7 @@
     ]
   },
   "sandbox": {
-    "enabled": true,
-    "autoAllowBashIfSandboxed": true,
-    "allowUnsandboxedCommands": false,
-    "excludedCommands": [
-      "git fetch *",
-      "git pull *",
-      "git push *",
-      "git ls-remote *",
-      "git clone *",
-      "ssh *",
-      "scp *",
-      "rsync *",
-      "python3 scripts/teamcity.py *",
-      "./scripts/teamcity.py *",
-      "npm run tc*"
-    ],
-    "network": {
-      "allowedDomains": ["*"],
-      "allowLocalBinding": true,
-      "allowAllUnixSockets": true
-    },
-    "enableWeakerNetworkIsolation": true,
-    "filesystem": {
-      "allowWrite": [
-        "~/.npm",
-        "~/.cache",
-        "~/Library/Caches",
-        "~/Library/pnpm",
-        "~/Library/Developer/Xcode/DerivedData",
-        "~/.gitnexus",
-        "~/.docker/buildx",
-        "/var/folders"
-      ]
-    }
+    "enabled": false
   },
   "env": {
     "NODE_USE_ENV_PROXY": "1"
