@@ -10,18 +10,23 @@ prefix_rule(
 )
 
 # Global git flags sit between "git" and the subcommand, so exact-prefix
-# matching would miss e.g. `git -C . push`. Route those through a prompt.
+# matching would miss e.g. `git -C . push`. Route those through a prompt. -P and
+# --no-pager only choose how output is printed, conceal nothing, and were the two
+# that came up in ordinary work, so they are no longer listed.
 prefix_rule(
-    pattern = ["git", ["-c", "-C", "--git-dir", "--work-tree", "--exec-path", "--namespace", "-P", "--no-pager"]],
+    pattern = ["git", ["-c", "-C", "--git-dir", "--work-tree", "--exec-path", "--namespace"]],
     decision = "prompt",
     justification = "A global git flag can conceal a blocked subcommand; confirm manually.",
 )
 
 # ---- git history rewriting: confirm before it happens ----
+# Only the forms that throw work away. Plain `git reset` and `git reset <path>`
+# unstage and touch no file, which is ordinary work. As with --amend below, the
+# flag is matched only directly after "reset".
 prefix_rule(
-    pattern = ["git", "reset"],
+    pattern = ["git", "reset", ["--hard", "--merge", "--keep"]],
     decision = "prompt",
-    justification = "reset can discard staged changes or drop commits; confirm manually.",
+    justification = "These forms of reset discard uncommitted work; confirm manually.",
 )
 
 # Only matches --amend directly after "commit". prefix_rule has no way to match
@@ -54,7 +59,7 @@ prefix_rule(
 # ---- npm ----
 # Targets that deploy, publish or destroy state still ask first.
 prefix_rule(
-    pattern = ["npm", "run", ["clean", "indexes:deploy", "release:major", "release:minor", "release:patch", "super-clean", "test:wipe-data"]],
+    pattern = ["npm", "run", ["indexes:deploy", "release:major", "release:minor", "release:patch", "super-clean", "test:wipe-data"]],
     decision = "prompt",
     justification = "This target changes deployed or persistent state.",
 )

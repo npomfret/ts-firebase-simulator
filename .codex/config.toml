@@ -8,13 +8,27 @@ description = "Write inside the checkout; read anywhere; reach the network."
 extends = ":workspace"
 
 [permissions.project.filesystem]
-"~/.npm" = "write"
+# This checkout's own .git, which :workspace keeps read-only. Without it
+# every commit stops and asks. It has to be a real path; no `:` token works.
+"~/projects/ts-firebase-simulator/.git" = "write"
+
+"~/.config" = "write"
+"~/.local/share" = "write"
+"~/.local/state" = "write"
 "~/.cache" = "write"
-"~/Library/Caches" = "write"
-"~/Library/pnpm" = "write"
-"~/Library/Developer/Xcode/DerivedData" = "write"
+"~/.npm" = "write"
+"~/.yarn" = "write"
+"~/.pnpm-store" = "write"
+"~/.bun" = "write"
+"~/.deno" = "write"
+"~/.nvm" = "write"
+"~/.pyenv" = "write"
+"~/.docker" = "write"
 "~/.gitnexus" = "write"
-"~/.docker/buildx" = "write"
+"~/Library/pnpm" = "write"
+"~/Library/Caches" = "write"
+"~/Library/Logs" = "write"
+"~/Library/Developer" = "write"
 
 [permissions.project.network]
 enabled = true
