@@ -35,7 +35,8 @@
     "task-files@npomfret": true,
     "teamcity@npomfret": true,
     "webstorm@npomfret": true,
-    "auditing@npomfret": true
+    "auditing@npomfret": true,
+    "typesafe@typesafe-ai": true
   },
   "enabledMcpjsonServers": ["gitnexus", "webstorm"]
 }
