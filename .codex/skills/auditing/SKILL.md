@@ -43,6 +43,8 @@ log.info("created expense \(id)")                                     no
 - **The label is a fixed string.** It names what happened, as in `expense-created` or
   `sync-finished` or `payment-rejected`. It is the same every time that line runs,
   so you can search for it, filter on it and count it.
+  Whether it is a slug (`expense-created`) or a short phrase (`API error occurred`)
+  is the project's style; what matters is that it never changes.
 - **Templated and concatenated strings are never used, anywhere, for any reason.** A
   runtime value goes in the JSON blob under a field name. It never goes in the label.
 - **Reuse field names.** Call the same thing by the same name everywhere
