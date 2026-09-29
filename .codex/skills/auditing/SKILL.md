@@ -95,18 +95,28 @@ exempt it from the level setting.
   passes through. Let it bubble to the boundary that deals with it, and log it
   there.
 
-### One logger
+### One strongly typed logger
 
-- One module creates the logger, and all output goes through it. Nothing else calls
-  `console.*`, `print`, `println`, `echo`, `System.out` or `NSLog`. That covers
+Code never talks to the raw output. It goes through a strongly typed logger that the
+project owns, and that logger is built so a developer cannot easily get it wrong.
+
+- **One module creates the logger, and every line goes through it.** Nothing else
+  calls `console.*`, `print`, `println`, `echo`, `System.out` or `NSLog`. That covers
   application code, scripts, and debugging lines left behind.
-- Context that applies to a whole request or job (the user, request id, job id, the
-  entity being worked on) is attached by the logger automatically, through a child
-  logger or the language's async context. Do not repeat it at every call.
+- **Its types do the enforcing.** The label parameter accepts only a fixed string,
+  the data parameter accepts only a structured object, and error calls take the
+  error object itself. Where the compiler can reject a mistake, it should, so the
+  wrong call does not build.
+- **Child loggers carry shared fields.** A child logger inherits its parent's fields
+  and adds its own, so a request, job or entity sets its context once and every line
+  beneath it includes that context. Do not repeat those fields at each call.
+- **Allowed fields are the project's call.** Some projects standardise the field
+  names, with a typed context listing the fields a line may carry. Others leave the
+  names open. Either way, the logger's types enforce whatever the project chose.
 - Scripts use the same logger and write to the same kind of log file. The terminal
   can show progress, but the file keeps the record.
-- Where the project has a `check`, it fails if a direct output call appears
-  outside the logger module.
+- Where the project has a `check`, it fails if a direct output call appears outside
+  the logger module.
 - Tests assert on the label and the fields, not on the formatted text.
 
 ### What never goes in the data
@@ -125,6 +135,7 @@ fields, in case one arrives inside a URL.
 - No templated or concatenated string was added to a log call.
 - Every caught error that is logged carries its stack, unless the failure was
   genuinely expected.
-- No direct output call was added outside the logger module.
+- No direct output call was added outside the logger module, and nothing bypasses
+  the logger's types.
 
 *Generated from `npomfret/agent-standards`. Edit the standard there, not this copy.*
