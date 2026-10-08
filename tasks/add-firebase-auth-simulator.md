@@ -1,7 +1,6 @@
 # Add a Firebase Auth simulator
 
-**Status:** API proposed; adapter placement and parity scope decided. Nothing
-implemented.
+**Status:** Phase 1 (users) done; phases 2–5 to do.
 
 ## The issue
 
@@ -134,7 +133,8 @@ export class StubAuth implements IAuth {
     client(): IAuthClient;
 
     // Test controls
-    seedUser(user: SeedUser, options?: { password?: string; }): UserRecord;
+    /** Replaces any user with the same uid; refuses an email another user has. */
+    seedUser(user: SeedUser): UserRecord;
     /** An ID token for the user, as a sign-in would issue. */
     issueIdToken(uid: string): string;
     /** The oobCode Firebase would put in the emailed link; as the matching generate*Link. */
@@ -147,7 +147,8 @@ export class StubAuth implements IAuth {
     clear(): void;
 }
 
-export type SeedUser = Partial<Omit<UserRecord, 'toJSON'>> & { uid: string; };
+/** `createUser`'s properties, a required uid, and optionally when the account was created. */
+export interface SeedUser extends CreateRequest { uid: string; creationTime?: Date; }
 ```
 
 The consumer's controls map onto these as: `setUser` → `seedUser`;
@@ -165,13 +166,18 @@ Differences from the consumer's stub, because the real service behaves otherwise
   Firebase does; the consumer's adapter already maps that to `null`. Its stub
   currently throws for a deleted user but returns `null` for one that never existed.
 - `issueActionCode` refuses an unknown email, as the `generate*Link` calls do.
+- The 100-identifier limit on `getUsers` and the 1–1000 `maxResults` limit on
+  `listUsers` are enforced, as the Admin SDK enforces them before any request.
+  The consumer's `reconcile-auth-accounts` test calls `listUsers` with
+  `maxResults: 10_000`, which the real SDK refuses; that test changes in its
+  migration.
 - ID tokens stay JWT-shaped (the consumer's driver inspects token shape);
   custom tokens and session cookies are opaque.
 
 New exports, all additive, so a minor version: `IAuth`, `IAuthClient`,
 `createAuth`, `createAuthClient`, `AuthClientConfig`, `SignInResponse`,
 `ResetPasswordResponse`, `UpdateAccountResponse`, `IdentityToolkitError`,
-`StubAuth`, `StubAuthOptions`, `StubAuthError`, `SeedUser`.
+`StubAuth`, `StubAuthOptions`, `StubAuthError`, `SeedUser`, `FailableAuthOperation`.
 
 ## Decisions
 
@@ -191,13 +197,30 @@ New exports, all additive, so a minor version: `IAuth`, `IAuthClient`,
 Each phase ends with `npm run build`, `npm run test:unit`, `npm run
 test:with-emulator` and `npm run format:check` passing.
 
-1. **Users.** `IAuth` user operations, `createAuth`, `StubAuth` with `seedUser`,
-   `clear`, `failNext`/`remainingFailures`. Add the Auth emulator to
-   `firebase.json` (port 9099, `FIREBASE_AUTH_EMULATOR_HOST`). Parity tests (stub
-   and emulator) in
-   `src/__tests__/integration/auth-compatibility.test.ts`: create, duplicate email,
-   get/update/delete, missing users, `getUsers` with unknown uids, `listUsers`
-   paging.
+1. [x] **Users.** `IAuth` user operations, `createAuth`, `StubAuth` with `seedUser`,
+   `clear`, `failNext`/`remainingFailures`. Auth emulator added to
+   `firebase.json` (port 9099). Parity tests (stub and emulator) in
+   `src/__tests__/integration/auth-compatibility.test.ts`: create, duplicate email
+   and uid, get/update/delete, missing users, `getUsers` with unknown and repeated
+   uids and its 100 limit, `listUsers` paging and its 1–1000 limit.
+   Verified: `npm run build`, `npm run test:unit` (111 passed),
+   `npm run test:with-emulator` (91 passed, Auth on stub and emulator),
+   `npm run format:check`.
+
+   Emulator behaviour the stub mirrors, found by probing it: emails stored and
+   matched in lower case; generated uids are 28 alphanumerics; `lastSignInTime`
+   equals `creationTime` at creation; `tokensValidAfterTime` is set by creating
+   with a password and by changing the password or email; `lastRefreshTime` is
+   set by changing the password; the password provider appears only when the user
+   has both an email and a password; `listUsers` pages in uid order with the last
+   uid as page token, returned whenever a page is full; `getUsers`' limit throws
+   synchronously.
+
+   Limitations: no input validation (malformed email, short password, uid
+   length, photo URL), which the Admin SDK does before any request; no
+   `passwordHash`/`passwordSalt`; no custom claims; `getUsers` by uid only. The
+   emulator's admin-created accounts showing a `lastSignInTime` may differ from
+   real Firebase, which is not checked.
 2. **Tokens.** Custom tokens, ID tokens, session cookies, revocation,
    `issueIdToken`, `advanceClock`. Parity: revoked and disabled users, deleted user
    behind a cookie, revocation at one-second resolution. Expiry is checked in stub
