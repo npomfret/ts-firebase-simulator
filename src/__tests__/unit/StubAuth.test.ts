@@ -172,6 +172,18 @@ describe('StubAuth', () => {
         });
     });
 
+    describe('client', () => {
+        it('refuses a custom token another stub issued', async () => {
+            const other = new StubAuth();
+            auth.seedUser({ uid: 'stranger' });
+
+            await expect(auth.client().signInWithCustomToken({ token: await other.createCustomToken('stranger'), returnSecureToken: true })).rejects.toMatchObject({
+                status: 400,
+                reason: 'INVALID_CUSTOM_TOKEN',
+            });
+        });
+    });
+
     it('returns records that changing the stub does not alter', async () => {
         const created = await auth.createUser({ uid: 'snapshot', displayName: 'Before' });
 

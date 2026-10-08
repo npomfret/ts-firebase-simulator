@@ -16,7 +16,7 @@
 
 import { getApps, initializeApp } from 'firebase-admin/app';
 import { getAuth, type UserRecord } from 'firebase-admin/auth';
-import { createAuth, type IAuth, StubAuth } from 'ts-firebase-simulator';
+import { createAuth, createAuthClient, type IAuth, type IAuthClient, IdentityToolkitError, StubAuth } from 'ts-firebase-simulator';
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 type TestMode = 'stub' | 'emulator';
@@ -31,6 +31,10 @@ function emulatorHost(): string | undefined {
 function getEmulatorAuth(): IAuth {
     const app = getApps().find((existing) => existing.name === EMULATOR_APP_NAME) ?? initializeApp({ projectId: EMULATOR_PROJECT_ID }, EMULATOR_APP_NAME);
     return createAuth(getAuth(app));
+}
+
+function getEmulatorAuthClient(): IAuthClient {
+    return createAuthClient({ apiKey: 'fake-api-key', baseUrl: `http://${emulatorHost()}/identitytoolkit.googleapis.com` });
 }
 
 /** Deletes every account in the emulator's project */
@@ -64,12 +68,14 @@ function expectRecentUtcString(value: string | null | undefined, label: string):
 describe('Auth Stub Compatibility - Integration Test', () => {
     let stubAuth: StubAuth;
     let emulatorAuth: IAuth | null = null;
+    let emulatorAuthClient: IAuthClient | null = null;
     const emulatorAvailable = !!emulatorHost();
 
     beforeAll(() => {
         console.log(`Auth test modes: stub=yes, emulator=${emulatorAvailable ? 'yes' : 'no'}`);
         if (emulatorAvailable) {
             emulatorAuth = getEmulatorAuth();
+            emulatorAuthClient = getEmulatorAuthClient();
         }
     });
 
@@ -94,11 +100,18 @@ describe('Auth Stub Compatibility - Integration Test', () => {
         }
     }
 
-    async function testAllImplementations(testFn: (auth: IAuth, mode: TestMode) => Promise<void>) {
-        await testFn(stubAuth, 'stub');
-        if (emulatorAuth) {
-            await testFn(emulatorAuth, 'emulator');
+    async function testAllImplementations(testFn: (auth: IAuth, mode: TestMode, client: IAuthClient) => Promise<void>) {
+        await testFn(stubAuth, 'stub', stubAuth.client());
+        if (emulatorAuth && emulatorAuthClient) {
+            await testFn(emulatorAuth, 'emulator', emulatorAuthClient);
         }
+    }
+
+    /** Expects the call to fail as the REST API fails it: an IdentityToolkitError with HTTP 400 */
+    async function expectIdentityToolkitError(call: Promise<unknown>, message: string, label: string): Promise<void> {
+        const error = await call.then(() => undefined, (thrown: unknown) => thrown);
+        expect(error, label).toBeInstanceOf(IdentityToolkitError);
+        expect(error, label).toMatchObject({ status: 400, reason: message.split(' : ')[0], message });
     }
 
     describe('createUser', () => {
@@ -584,6 +597,92 @@ describe('Auth Stub Compatibility - Integration Test', () => {
         it('refuses to revoke a missing user', async () => {
             await testAllImplementations(async (auth, mode) => {
                 await expect(auth.revokeRefreshTokens('missing'), `missing (${mode})`).rejects.toMatchObject({ code: 'auth/user-not-found' });
+            });
+        });
+    });
+
+    describe('client sign-in', () => {
+        it('signs in with a password, in any email case', async () => {
+            await testAllImplementations(async (auth, mode, client) => {
+                await auth.createUser({ uid: 'walker', email: 'walker@example.com', password: 'secret1' });
+
+                const response = await client.signInWithPassword({ email: 'Walker@Example.com', password: 'secret1', returnSecureToken: true });
+
+                expect(response, `response (${mode})`).toMatchObject({ localId: 'walker', email: 'walker@example.com', refreshToken: expect.any(String), expiresIn: '3600' });
+                const decoded = await auth.verifyIdToken(response.idToken!, true);
+                expect(decoded.firebase, `firebase (${mode})`).toEqual({ identities: { email: ['walker@example.com'] }, sign_in_provider: 'password' });
+                const { metadata } = await auth.getUser('walker');
+                expect(metadata.lastRefreshTime, `lastRefreshTime (${mode})`).toBe(metadata.lastSignInTime);
+            });
+        });
+
+        it('signs in without asking for tokens, and returns them anyway, as the emulator does', async () => {
+            await testAllImplementations(async (auth, mode, client) => {
+                await auth.createUser({ uid: 'checker', email: 'checker@example.com', password: 'secret1' });
+
+                const response = await client.signInWithPassword({ email: 'checker@example.com', password: 'secret1', returnSecureToken: false });
+
+                expect(response, `response (${mode})`).toMatchObject({ localId: 'checker', email: 'checker@example.com', idToken: expect.any(String) });
+            });
+        });
+
+        it('refuses a wrong password, and a user without one', async () => {
+            await testAllImplementations(async (auth, mode, client) => {
+                await auth.createUser({ uid: 'guarded', email: 'guarded@example.com', password: 'secret1' });
+                await auth.createUser({ uid: 'passwordless', email: 'passwordless@example.com' });
+
+                await expectIdentityToolkitError(client.signInWithPassword({ email: 'guarded@example.com', password: 'wrong1', returnSecureToken: true }), 'INVALID_PASSWORD', `wrong (${mode})`);
+                await expectIdentityToolkitError(
+                    client.signInWithPassword({ email: 'passwordless@example.com', password: 'secret1', returnSecureToken: true }),
+                    'INVALID_PASSWORD',
+                    `none (${mode})`,
+                );
+            });
+        });
+
+        it('refuses an unknown email', async () => {
+            await testAllImplementations(async (_auth, mode, client) => {
+                await expectIdentityToolkitError(client.signInWithPassword({ email: 'nobody@example.com', password: 'secret1', returnSecureToken: true }), 'EMAIL_NOT_FOUND', `unknown (${mode})`);
+            });
+        });
+
+        it('refuses a disabled user, whatever the password', async () => {
+            await testAllImplementations(async (auth, mode, client) => {
+                await auth.createUser({ uid: 'benched', email: 'benched@example.com', password: 'secret1', disabled: true });
+
+                await expectIdentityToolkitError(client.signInWithPassword({ email: 'benched@example.com', password: 'secret1', returnSecureToken: true }), 'USER_DISABLED', `right (${mode})`);
+                await expectIdentityToolkitError(client.signInWithPassword({ email: 'benched@example.com', password: 'wrong1', returnSecureToken: true }), 'USER_DISABLED', `wrong (${mode})`);
+                await expectIdentityToolkitError(
+                    client.signInWithCustomToken({ token: await auth.createCustomToken('benched'), returnSecureToken: true }),
+                    'USER_DISABLED',
+                    `custom token (${mode})`,
+                );
+            });
+        });
+
+        it('signs in with a custom token, carrying its claims', async () => {
+            await testAllImplementations(async (auth, mode, client) => {
+                await auth.createUser({ uid: 'custom', email: 'custom@example.com' });
+
+                const response = await client.signInWithCustomToken({ token: await auth.createCustomToken('custom', { role: 'admin' }), returnSecureToken: true });
+
+                expect(response, `response (${mode})`).toMatchObject({ idToken: expect.any(String), refreshToken: expect.any(String), expiresIn: '3600' });
+                const decoded = await auth.verifyIdToken(response.idToken, true);
+                expect(decoded, `claims (${mode})`).toMatchObject({ uid: 'custom', role: 'admin', firebase: { identities: { email: ['custom@example.com'] }, sign_in_provider: 'custom' } });
+            });
+        });
+
+        it('refuses a malformed custom token, and an ID token', async () => {
+            await testAllImplementations(async (auth, mode, client) => {
+                await auth.createUser({ uid: 'mistaken' });
+                const idToken = await signIn(auth, mode, 'mistaken');
+
+                await expectIdentityToolkitError(client.signInWithCustomToken({ token: 'garbage', returnSecureToken: true }), 'INVALID_CUSTOM_TOKEN : Invalid assertion format', `garbage (${mode})`);
+                await expectIdentityToolkitError(
+                    client.signInWithCustomToken({ token: idToken, returnSecureToken: true }),
+                    `INVALID_CUSTOM_TOKEN : ((Invalid aud (audience): ${EMULATOR_PROJECT_ID} Note: Firebase ID Tokens / third-party tokens cannot be used with signInWithCustomToken.))`,
+                    `ID token (${mode})`,
+                );
             });
         });
     });

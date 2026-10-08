@@ -1,6 +1,7 @@
 import type { CreateRequest, DecodedIdToken, GetUsersResult, ListUsersResult, SessionCookieOptions, UidIdentifier, UpdateRequest, UserInfo, UserMetadata, UserRecord } from 'firebase-admin/auth';
 import { Buffer } from 'node:buffer';
 import { createHmac, randomBytes, randomInt } from 'node:crypto';
+import { type IAuthClient, IdentityToolkitError, type SignInWithCustomTokenResponse, type SignInWithPasswordResponse } from './auth-client-types';
 import type { IAuth } from './auth-types';
 
 /**
@@ -54,6 +55,8 @@ const USER_DISABLED = ['auth/user-disabled', 'The user record is disabled.'] as 
 const INVALID_SESSION_COOKIE_DURATION = ['auth/invalid-session-cookie-duration', 'The session cookie duration must be a valid number in milliseconds between 5 minutes and 2 weeks.'] as const;
 const INVALID_ID_TOKEN = ['auth/invalid-id-token', 'The provided ID token is not a valid Firebase ID token.'] as const;
 const ID_TOKEN_EXPIRED = ['auth/id-token-expired', 'The provided Firebase ID token is expired.'] as const;
+
+const INVALID_CUSTOM_TOKEN_FORMAT = 'INVALID_CUSTOM_TOKEN : Invalid assertion format';
 
 const MAX_GET_USERS_IDENTIFIERS = 100;
 const MAX_LIST_USERS_RESULTS = 1000;
@@ -112,9 +115,18 @@ export class StubAuth implements IAuth {
     private readonly signingKey = randomBytes(32);
     /** How far the stub's clock is ahead of the real one, by what `advanceClock` added */
     private clockOffsetMs = 0;
+    private readonly authClient: IAuthClient = {
+        signInWithPassword: async (request) => this.signInWithPassword(request.email, request.password),
+        signInWithCustomToken: async (request) => this.signInWithCustomToken(request.token),
+    };
 
     constructor(options: StubAuthOptions = {}) {
         this.projectId = options.projectId ?? 'test-project';
+    }
+
+    /** The REST API client over this stub's users and tokens, as an app's admin and REST calls reach the same project */
+    client(): IAuthClient {
+        return this.authClient;
     }
 
     async createUser(properties: CreateRequest): Promise<UserRecord> {
@@ -321,6 +333,51 @@ export class StubAuth implements IAuth {
         return toSeconds(this.nowMs());
     }
 
+    /** As the emulator: an unknown email, then a disabled user, then a wrong or absent password is refused */
+    private signInWithPassword(email: string, password: string): SignInWithPasswordResponse {
+        const user = this.findByEmail(email);
+        if (!user) {
+            throw new IdentityToolkitError(400, 'EMAIL_NOT_FOUND');
+        }
+        if (user.disabled) {
+            throw new IdentityToolkitError(400, 'USER_DISABLED');
+        }
+        if (user.password === undefined || user.password !== password) {
+            throw new IdentityToolkitError(400, 'INVALID_PASSWORD');
+        }
+        // As the emulator: tokens are returned whatever returnSecureToken asks for
+        const idToken = this.signIn(user.uid, 'password', {});
+        return { localId: user.uid, email: user.email!, idToken, refreshToken: newRefreshToken(), expiresIn: String(ID_TOKEN_LIFETIME_SECONDS) };
+    }
+
+    private signInWithCustomToken(token: string): SignInWithCustomTokenResponse {
+        const { uid, claims } = this.decodeCustomToken(token);
+        if (this.users.get(uid)?.disabled) {
+            throw new IdentityToolkitError(400, 'USER_DISABLED');
+        }
+        const idToken = this.signIn(uid, 'custom', claims);
+        return { idToken, refreshToken: newRefreshToken(), expiresIn: String(ID_TOKEN_LIFETIME_SECONDS) };
+    }
+
+    /** A custom token's uid and developer claims, refused as the emulator refuses it, or for a signature not this stub's */
+    private decodeCustomToken(token: string): { uid: string; claims: object; } {
+        const parts = token.split('.');
+        const payload = parts.length === 3 && decodeJwtPart(parts[0]) ? decodeJwtPart(parts[1]) : undefined;
+        if (!payload) {
+            throw new IdentityToolkitError(400, INVALID_CUSTOM_TOKEN_FORMAT);
+        }
+        if (payload.aud !== CUSTOM_TOKEN_AUDIENCE) {
+            throw new IdentityToolkitError(
+                400,
+                `INVALID_CUSTOM_TOKEN : ((Invalid aud (audience): ${String(payload.aud)} Note: Firebase ID Tokens / third-party tokens cannot be used with signInWithCustomToken.))`,
+            );
+        }
+        if (parts[2] !== this.sign(`${parts[0]}.${parts[1]}`) || typeof payload.uid !== 'string') {
+            throw new IdentityToolkitError(400, 'INVALID_CUSTOM_TOKEN');
+        }
+        return { uid: payload.uid, claims: (payload.claims as object | undefined) ?? {} };
+    }
+
     private signIn(uid: string, signInProvider: string, developerClaims: object): string {
         const nowMs = this.nowMs();
         const existing = this.users.get(uid) ?? this.newUser(uid, {}, nowMs);
@@ -483,6 +540,11 @@ function decodeJwtPart(part: string): Record<string, unknown> | undefined {
     } catch {
         return undefined;
     }
+}
+
+/** An opaque refresh token; the stub does not exchange refresh tokens */
+function newRefreshToken(): string {
+    return randomBytes(32).toString('base64url');
 }
 
 function failureKey(operation: FailableAuthOperation, uid: string): string {

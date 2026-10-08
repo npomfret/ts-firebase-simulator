@@ -1,6 +1,6 @@
 # Add a Firebase Auth simulator
 
-**Status:** Phases 1 (users) and 2 (tokens) done; phases 3–5 to do.
+**Status:** Phases 1 (users), 2 (tokens) and 3 (client sign-in) done; phases 4–5 to do.
 
 ## The issue
 
@@ -90,22 +90,24 @@ used.
 
 ```ts
 export interface IAuthClient {
-    signInWithPassword(request: { email: string; password: string; returnSecureToken: boolean; }): Promise<SignInResponse>;
-    signInWithCustomToken(request: { token: string; returnSecureToken: true; }): Promise<SignInResponse>;
+    signInWithPassword(request: { email: string; password: string; returnSecureToken: boolean; }): Promise<SignInWithPasswordResponse>;
+    signInWithCustomToken(request: { token: string; returnSecureToken: true; }): Promise<SignInWithCustomTokenResponse>;
     /** `accounts:resetPassword`: without `newPassword` it reads the code; with it, it uses the code. */
     resetPassword(request: { oobCode: string; newPassword?: string; }): Promise<ResetPasswordResponse>;
     /** `accounts:update` with an `oobCode`: applies a VERIFY_EMAIL or VERIFY_AND_CHANGE_EMAIL code. */
     applyActionCode(request: { oobCode: string; }): Promise<UpdateAccountResponse>;
 }
 
-export interface SignInResponse { localId: string; email?: string; idToken?: string; refreshToken?: string; expiresIn?: string; }
+export interface SignInWithPasswordResponse { localId: string; email: string; idToken?: string; refreshToken?: string; expiresIn?: string; }
+/** A custom-token sign-in's response has no localId: the uid is the token's */
+export interface SignInWithCustomTokenResponse { idToken: string; refreshToken: string; expiresIn: string; }
 export interface ResetPasswordResponse { email: string; requestType: 'PASSWORD_RESET' | 'VERIFY_EMAIL' | 'VERIFY_AND_CHANGE_EMAIL'; newEmail?: string; }
 export interface UpdateAccountResponse { localId: string; email: string; emailVerified: boolean; }
 
-/** Thrown by both implementations for a non-2xx response. */
+/** Thrown by both implementations for a non-2xx response; the message is Firebase's. */
 export class IdentityToolkitError extends Error {
-    readonly status: number;
-    /** The reason before " : ", e.g. `INVALID_OOB_CODE`. */
+    constructor(readonly status: number, message: string);
+    /** The reason before " : ", e.g. `INVALID_OOB_CODE`; `HTTP_<status>` for a body without one. */
     readonly reason: string;
 }
 
@@ -183,7 +185,8 @@ Differences from the consumer's stub, because the real service behaves otherwise
   the Admin SDK always looks it up, so parity tests pass `checkRevoked: true`.
 
 New exports, all additive, so a minor version: `IAuth`, `IAuthClient`,
-`createAuth`, `createAuthClient`, `AuthClientConfig`, `SignInResponse`,
+`createAuth`, `createAuthClient`, `AuthClientConfig`, `SignInWithPasswordResponse`,
+`SignInWithCustomTokenResponse`,
 `ResetPasswordResponse`, `UpdateAccountResponse`, `IdentityToolkitError`,
 `StubAuth`, `StubAuthOptions`, `StubAuthError`, `SeedUser`, `FailableAuthOperation`.
 
@@ -256,9 +259,33 @@ test:with-emulator` and `npm run format:check` passing.
    which error wins when a token fails more than one check is not verified;
    token signing is not Google's, so stub tokens verify only against their own
    `StubAuth`.
-3. **Client sign-in.** `IAuthClient` sign-in methods, `IdentityToolkitError`,
-   `createAuthClient`, `StubAuth.client()`. Parity: wrong password, unknown email,
-   disabled user, invalid custom token, `returnSecureToken: false`.
+3. [x] **Client sign-in.** `IAuthClient` sign-in methods, `IdentityToolkitError`,
+   `createAuthClient`, `StubAuth.client()`. Parity (`createAuthClient` against the
+   emulator, `client()` on the stub): password sign-in in any email case, its
+   claims and metadata, `returnSecureToken: false`, wrong password, a user without
+   one, unknown email, disabled user (password and custom token), custom-token
+   claims, a malformed custom token and an ID token used as one. A stub unit test
+   covers a custom token from another `StubAuth`. Verified: `npm run build`,
+   `npm run test:unit` (119 passed), `npm run test:with-emulator` (110 passed,
+   Auth on stub and emulator), `npm run format:check`.
+
+   Emulator behaviour the stub mirrors: a disabled user is refused before the
+   password is checked; a user without a password gets `INVALID_PASSWORD`;
+   tokens are returned even with `returnSecureToken: false`; a custom-token
+   response has no `localId`; developer claims go into the ID token;
+   `sign_in_provider` is `password` or `custom`; the custom-token refusals'
+   messages (`Invalid assertion format`, and the audience note for an ID token).
+
+   Limitations: real Firebase projects with email enumeration protection (the
+   default since 2023) answer both a wrong password and an unknown email with
+   `INVALID_LOGIN_CREDENTIALS`; the emulator, and so the stub, does not. What
+   real Firebase returns for `returnSecureToken: false` is not checked, hence the
+   optional token fields. No input validation (`MISSING_PASSWORD`,
+   `INVALID_EMAIL`, `MISSING_CUSTOM_TOKEN`), no custom-token expiry, no
+   `TOO_MANY_ATTEMPTS_TRY_LATER`; refresh tokens are opaque and cannot be
+   exchanged. A custom token with a foreign signature is refused as
+   `INVALID_CUSTOM_TOKEN` with no detail, since the emulator does not check
+   signatures.
 4. **Action codes.** `generate*Link`, `issueActionCode`, `resetPassword`,
    `applyActionCode`. Parity: single use, wrong type for the call, reset marks the
    email verified and revokes tokens, email change to an address taken meanwhile.
