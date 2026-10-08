@@ -1,5 +1,6 @@
-import type { CreateRequest, GetUsersResult, ListUsersResult, UidIdentifier, UpdateRequest, UserInfo, UserMetadata, UserRecord } from 'firebase-admin/auth';
-import { randomInt } from 'node:crypto';
+import type { CreateRequest, DecodedIdToken, GetUsersResult, ListUsersResult, SessionCookieOptions, UidIdentifier, UpdateRequest, UserInfo, UserMetadata, UserRecord } from 'firebase-admin/auth';
+import { Buffer } from 'node:buffer';
+import { createHmac, randomBytes, randomInt } from 'node:crypto';
 import type { IAuth } from './auth-types';
 
 /**
@@ -22,6 +23,11 @@ export interface SeedUser extends CreateRequest {
     creationTime?: Date;
 }
 
+export interface StubAuthOptions {
+    /** The project tokens are issued for, as their audience and in their issuer. Defaults to 'test-project'. */
+    projectId?: string;
+}
+
 /** The operations `failNext` can make fail */
 export type FailableAuthOperation = 'getUser' | 'updateUser';
 
@@ -35,6 +41,7 @@ interface StoredUser {
     disabled: boolean;
     password?: string;
     createdAtMs: number;
+    lastSignInAtMs: number;
     lastRefreshAtMs?: number;
     /** Whole seconds: tokens issued before it are revoked */
     validSinceSeconds?: number;
@@ -43,17 +50,72 @@ interface StoredUser {
 const USER_NOT_FOUND = ['auth/user-not-found', 'There is no user record corresponding to the provided identifier.'] as const;
 const EMAIL_ALREADY_EXISTS = ['auth/email-already-exists', 'The email address is already in use by another account.'] as const;
 const UID_ALREADY_EXISTS = ['auth/uid-already-exists', 'The user with the provided uid already exists.'] as const;
+const USER_DISABLED = ['auth/user-disabled', 'The user record is disabled.'] as const;
+const INVALID_SESSION_COOKIE_DURATION = ['auth/invalid-session-cookie-duration', 'The session cookie duration must be a valid number in milliseconds between 5 minutes and 2 weeks.'] as const;
+const INVALID_ID_TOKEN = ['auth/invalid-id-token', 'The provided ID token is not a valid Firebase ID token.'] as const;
+const ID_TOKEN_EXPIRED = ['auth/id-token-expired', 'The provided Firebase ID token is expired.'] as const;
 
 const MAX_GET_USERS_IDENTIFIERS = 100;
 const MAX_LIST_USERS_RESULTS = 1000;
 const UID_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+const ID_TOKEN_LIFETIME_SECONDS = 3600;
+const CUSTOM_TOKEN_LIFETIME_SECONDS = 3600;
+const MIN_SESSION_COOKIE_SECONDS = 5 * 60;
+const MAX_SESSION_COOKIE_SECONDS = 14 * 24 * 60 * 60;
+const CUSTOM_TOKEN_AUDIENCE = 'https://identitytoolkit.googleapis.com/google.identity.identitytoolkit.v1.IdentityToolkit';
+/** The service account the emulator signs custom tokens as */
+const CUSTOM_TOKEN_SIGNER = 'firebase-auth-emulator@example.com';
+
+/** How the Admin SDK names, checks and refuses one kind of token */
+interface TokenKind {
+    jwtName: string;
+    shortName: string;
+    article: string;
+    docsUrl: string;
+    issuerPrefix: string;
+    expiredCode: string;
+    revoked: readonly [string, string];
+}
+
+const ID_TOKEN: TokenKind = {
+    jwtName: 'Firebase ID token',
+    shortName: 'ID token',
+    article: 'an',
+    docsUrl: 'https://firebase.google.com/docs/auth/admin/verify-id-tokens',
+    issuerPrefix: 'https://securetoken.google.com/',
+    expiredCode: 'auth/id-token-expired',
+    revoked: ['auth/id-token-revoked', 'The Firebase ID token has been revoked.'],
+};
+
+const SESSION_COOKIE: TokenKind = {
+    jwtName: 'Firebase session cookie',
+    shortName: 'session cookie',
+    article: 'a',
+    docsUrl: 'https://firebase.google.com/docs/auth/admin/manage-cookies',
+    issuerPrefix: 'https://session.firebase.google.com/',
+    expiredCode: 'auth/session-cookie-expired',
+    revoked: ['auth/session-cookie-revoked', 'The Firebase session cookie has been revoked.'],
+};
+
+/** The claims of an ID token or session cookie, as its JWT payload carries them */
+type TokenClaims = Record<string, unknown> & { aud: string; iss: string; sub: string; auth_time: number; iat: number; exp: number; };
 
 /**
- * In-memory implementation of Firebase Auth for testing, matching the Auth emulator's behaviour
+ * In-memory implementation of Firebase Auth for testing, matching the Auth emulator's behaviour.
+ * Its tokens are JWTs signed with a key of its own, so only tokens it issued verify.
  */
 export class StubAuth implements IAuth {
+    private readonly projectId: string;
     private readonly users = new Map<string, StoredUser>();
     private readonly failures = new Map<string, { remaining: number; error: Error; }>();
+    /** Signs the stub's tokens, standing in for Google's keys: only tokens this stub issued verify */
+    private readonly signingKey = randomBytes(32);
+    /** How far the stub's clock is ahead of the real one, by what `advanceClock` added */
+    private clockOffsetMs = 0;
+
+    constructor(options: StubAuthOptions = {}) {
+        this.projectId = options.projectId ?? 'test-project';
+    }
 
     async createUser(properties: CreateRequest): Promise<UserRecord> {
         const uid = properties.uid ?? generateUid();
@@ -148,6 +210,63 @@ export class StubAuth implements IAuth {
         this.users.delete(uid);
     }
 
+    async createCustomToken(uid: string, developerClaims?: object): Promise<string> {
+        // As Firebase: minted without looking the user up
+        const issuedAt = this.nowSeconds();
+        return this.mintJwt({
+            aud: CUSTOM_TOKEN_AUDIENCE,
+            iat: issuedAt,
+            exp: issuedAt + CUSTOM_TOKEN_LIFETIME_SECONDS,
+            iss: CUSTOM_TOKEN_SIGNER,
+            sub: CUSTOM_TOKEN_SIGNER,
+            uid,
+            ...(developerClaims === undefined ? {} : { claims: developerClaims }),
+        });
+    }
+
+    async verifyIdToken(idToken: string, checkRevoked = false): Promise<DecodedIdToken> {
+        return this.verifyToken(idToken, ID_TOKEN, checkRevoked);
+    }
+
+    async createSessionCookie(idToken: string, sessionCookieOptions: SessionCookieOptions): Promise<string> {
+        // As the Admin SDK: the duration is checked in whole seconds, rounded down
+        const expiresIn = sessionCookieOptions?.expiresIn;
+        const durationSeconds = typeof expiresIn === 'number' ? Math.floor(expiresIn / 1000) : NaN;
+        if (!(durationSeconds >= MIN_SESSION_COOKIE_SECONDS && durationSeconds <= MAX_SESSION_COOKIE_SECONDS)) {
+            throw new StubAuthError(...INVALID_SESSION_COOKIE_DURATION);
+        }
+        let claims: TokenClaims;
+        try {
+            claims = this.decodeToken(idToken, ID_TOKEN);
+        } catch {
+            throw new StubAuthError(...INVALID_ID_TOKEN);
+        }
+        const user = this.requireUser(claims.sub);
+        if (user.disabled) {
+            throw new StubAuthError(...USER_DISABLED);
+        }
+        // As Firebase: a revoked ID token is refused as expired
+        if (this.nowSeconds() >= claims.exp || isRevoked(user, claims)) {
+            throw new StubAuthError(...ID_TOKEN_EXPIRED);
+        }
+        // The cookie keeps the ID token's claims, auth_time included
+        const issuedAt = this.nowSeconds();
+        return this.mintJwt({ ...claims, iss: SESSION_COOKIE.issuerPrefix + this.projectId, iat: issuedAt, exp: issuedAt + durationSeconds });
+    }
+
+    async verifySessionCookie(sessionCookie: string, checkRevoked = false): Promise<DecodedIdToken> {
+        return this.verifyToken(sessionCookie, SESSION_COOKIE, checkRevoked);
+    }
+
+    /**
+     * As Firebase: tokens become valid from this second, so ID tokens and session cookies
+     * signed in before it are revoked, and any signed in during it survive
+     */
+    async revokeRefreshTokens(uid: string): Promise<void> {
+        const user = this.requireUser(uid);
+        this.users.set(uid, { ...user, validSinceSeconds: this.nowSeconds() });
+    }
+
     // Test controls
 
     /**
@@ -171,6 +290,23 @@ export class StubAuth implements IAuth {
         return this.failures.get(failureKey(operation, uid))?.remaining ?? 0;
     }
 
+    /**
+     * Signs a user in as a custom-token sign-in would, and returns its ID token: a missing
+     * user is created, a disabled one refused, and the sign-in recorded in the user's metadata.
+     */
+    issueIdToken(uid: string): string {
+        return this.signIn(uid, 'custom', {});
+    }
+
+    /**
+     * Moves the stub's clock forward, for token expiry and revocation. Firebase compares a
+     * token's sign-in second with the second its user's tokens were revoked, so a test that
+     * revokes a token it has just issued advances the clock a second first.
+     */
+    advanceClock(ms: number): void {
+        this.clockOffsetMs += ms;
+    }
+
     /** Removes every user and pending failure. */
     clear(): void {
         this.users.clear();
@@ -178,7 +314,107 @@ export class StubAuth implements IAuth {
     }
 
     private nowMs(): number {
-        return Date.now();
+        return Date.now() + this.clockOffsetMs;
+    }
+
+    private nowSeconds(): number {
+        return toSeconds(this.nowMs());
+    }
+
+    private signIn(uid: string, signInProvider: string, developerClaims: object): string {
+        const nowMs = this.nowMs();
+        const existing = this.users.get(uid) ?? this.newUser(uid, {}, nowMs);
+        if (existing.disabled) {
+            throw new StubAuthError(...USER_DISABLED);
+        }
+        const user: StoredUser = { ...existing, lastSignInAtMs: nowMs, lastRefreshAtMs: nowMs };
+        this.users.set(uid, user);
+        return this.mintJwt(this.idTokenClaims(user, signInProvider, developerClaims, toSeconds(nowMs)));
+    }
+
+    /** An ID token's claims, as the emulator issues them */
+    private idTokenClaims(user: StoredUser, signInProvider: string, developerClaims: object, signedInAt: number): TokenClaims {
+        const identities: Record<string, string[]> = {};
+        if (user.email !== undefined) {
+            identities.email = [user.email];
+        }
+        if (user.phoneNumber !== undefined) {
+            identities.phone = [user.phoneNumber];
+        }
+        return {
+            ...(user.displayName === undefined ? {} : { name: user.displayName }),
+            ...(user.photoURL === undefined ? {} : { picture: user.photoURL }),
+            ...developerClaims,
+            ...(user.email === undefined ? {} : { email: user.email }),
+            email_verified: user.emailVerified,
+            ...(user.phoneNumber === undefined ? {} : { phone_number: user.phoneNumber }),
+            auth_time: signedInAt,
+            user_id: user.uid,
+            firebase: { identities, sign_in_provider: signInProvider },
+            iat: signedInAt,
+            exp: signedInAt + ID_TOKEN_LIFETIME_SECONDS,
+            aud: this.projectId,
+            iss: ID_TOKEN.issuerPrefix + this.projectId,
+            sub: user.uid,
+        };
+    }
+
+    private mintJwt(payload: object): string {
+        const unsigned = `${encodeJwtPart({ alg: 'HS256', typ: 'JWT' })}.${encodeJwtPart(payload)}`;
+        return `${unsigned}.${this.sign(unsigned)}`;
+    }
+
+    private sign(unsigned: string): string {
+        return createHmac('sha256', this.signingKey).update(unsigned).digest('base64url');
+    }
+
+    /** As the Admin SDK: decodes, then checks the audience, issuer and signature, refusing with its messages */
+    private decodeToken(token: string, kind: TokenKind): TokenClaims {
+        const parts = typeof token === 'string' ? token.split('.') : [];
+        const header = parts.length === 3 ? decodeJwtPart(parts[0]) : undefined;
+        const claims = parts.length === 3 ? decodeJwtPart(parts[1]) : undefined;
+        if (!header || !claims) {
+            throw new StubAuthError(
+                'auth/argument-error',
+                `Decoding ${kind.jwtName} failed. Make sure you passed the entire string JWT which represents ${kind.article} ${kind.shortName}.${docsMessage(kind)}`,
+            );
+        }
+        const projectMessage = ` Make sure the ${kind.shortName} comes from the same Firebase project as the service account used to authenticate this SDK.`;
+        if (claims.aud !== this.projectId) {
+            throw new StubAuthError(
+                'auth/argument-error',
+                `${kind.jwtName} has incorrect "aud" (audience) claim. Expected "${this.projectId}" but got "${claims.aud}".${projectMessage}${docsMessage(kind)}`,
+            );
+        }
+        const issuer = kind.issuerPrefix + this.projectId;
+        if (claims.iss !== issuer) {
+            throw new StubAuthError('auth/argument-error', `${kind.jwtName} has incorrect "iss" (issuer) claim. Expected "${issuer}" but got "${claims.iss}".${projectMessage}${docsMessage(kind)}`);
+        }
+        if (parts[2] !== this.sign(`${parts[0]}.${parts[1]}`)) {
+            throw new StubAuthError('auth/argument-error', `${kind.jwtName} has invalid signature.${docsMessage(kind)}`);
+        }
+        return claims as TokenClaims;
+    }
+
+    private verifyToken(token: string, kind: TokenKind, checkRevoked: boolean): DecodedIdToken {
+        const claims = this.decodeToken(token, kind);
+        if (this.nowSeconds() >= claims.exp) {
+            throw new StubAuthError(
+                kind.expiredCode,
+                `${kind.jwtName} has expired. Get a fresh ${kind.shortName} from your client app and try again (${kind.expiredCode}).${docsMessage(kind)}`,
+            );
+        }
+        // As the Admin SDK: the user is looked up only when checkRevoked is set (against the emulator, always)
+        if (checkRevoked) {
+            const user = this.requireUser(claims.sub);
+            if (user.disabled) {
+                throw new StubAuthError(...USER_DISABLED);
+            }
+            if (isRevoked(user, claims)) {
+                throw new StubAuthError(...kind.revoked);
+            }
+        }
+        return { ...claims, uid: claims.sub } as unknown as DecodedIdToken;
     }
 
     private newUser(uid: string, properties: CreateRequest, createdAtMs: number): StoredUser {
@@ -192,6 +428,8 @@ export class StubAuth implements IAuth {
             disabled: properties.disabled ?? false,
             password: properties.password,
             createdAtMs,
+            // As the emulator: creating an account counts as its first sign-in
+            lastSignInAtMs: createdAtMs,
             // As the emulator: an account created with a password has its tokens valid from creation
             validSinceSeconds: properties.password === undefined ? undefined : toSeconds(createdAtMs),
         };
@@ -226,6 +464,27 @@ export class StubAuth implements IAuth {
     }
 }
 
+function isRevoked(user: StoredUser, claims: TokenClaims): boolean {
+    return user.validSinceSeconds !== undefined && claims.auth_time < user.validSinceSeconds;
+}
+
+function docsMessage(kind: TokenKind): string {
+    return ` See ${kind.docsUrl} for details on how to retrieve ${kind.article} ${kind.shortName}.`;
+}
+
+function encodeJwtPart(value: object): string {
+    return Buffer.from(JSON.stringify(value)).toString('base64url');
+}
+
+function decodeJwtPart(part: string): Record<string, unknown> | undefined {
+    try {
+        const value: unknown = JSON.parse(Buffer.from(part, 'base64url').toString('utf8'));
+        return typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : undefined;
+    } catch {
+        return undefined;
+    }
+}
+
 function failureKey(operation: FailableAuthOperation, uid: string): string {
     return `${operation}:${uid}`;
 }
@@ -250,11 +509,9 @@ function toUtcString(ms: number): string {
 }
 
 function toUserRecord(user: StoredUser): UserRecord {
-    const createdAt = toUtcString(user.createdAtMs);
     const metadataFields = {
-        // As the emulator: creating an account counts as its first sign-in
-        lastSignInTime: createdAt,
-        creationTime: createdAt,
+        lastSignInTime: toUtcString(user.lastSignInAtMs),
+        creationTime: toUtcString(user.createdAtMs),
         lastRefreshTime: user.lastRefreshAtMs === undefined ? null : toUtcString(user.lastRefreshAtMs),
     };
     const metadata: UserMetadata = { ...metadataFields, toJSON: () => ({ ...metadataFields }) };

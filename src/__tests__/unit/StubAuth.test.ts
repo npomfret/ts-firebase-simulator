@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { StubAuth, StubAuthError } from '../../StubAuth';
 
 describe('StubAuth', () => {
@@ -76,6 +76,99 @@ describe('StubAuth', () => {
             await expect(auth.getUser('flaky')).resolves.toMatchObject({ uid: 'flaky' });
             await expect(auth.updateUser('steady', { displayName: 'Steady' })).resolves.toMatchObject({ displayName: 'Steady' });
             expect(auth.remainingFailures('updateUser', 'flaky')).toBe(1);
+        });
+    });
+
+    describe('tokens', () => {
+        const FIVE_MINUTES = 5 * 60 * 1000;
+
+        afterEach(() => {
+            vi.useRealTimers();
+        });
+
+        it('expires an ID token after an hour', async () => {
+            auth.seedUser({ uid: 'expiring' });
+            const idToken = auth.issueIdToken('expiring');
+
+            auth.advanceClock(3600 * 1000 - 1000);
+            await expect(auth.verifyIdToken(idToken, true)).resolves.toMatchObject({ uid: 'expiring' });
+
+            auth.advanceClock(1000);
+            await expect(auth.verifyIdToken(idToken, true)).rejects.toMatchObject({
+                code: 'auth/id-token-expired',
+                message:
+                    'Firebase ID token has expired. Get a fresh ID token from your client app and try again (auth/id-token-expired). See https://firebase.google.com/docs/auth/admin/verify-id-tokens for details on how to retrieve an ID token.',
+            });
+            await expect(auth.createSessionCookie(idToken, { expiresIn: FIVE_MINUTES })).rejects.toMatchObject({ code: 'auth/id-token-expired' });
+        });
+
+        it('expires a session cookie after its duration', async () => {
+            auth.seedUser({ uid: 'expiring' });
+            const cookie = await auth.createSessionCookie(auth.issueIdToken('expiring'), { expiresIn: FIVE_MINUTES });
+
+            auth.advanceClock(FIVE_MINUTES - 1000);
+            await expect(auth.verifySessionCookie(cookie, true)).resolves.toMatchObject({ uid: 'expiring' });
+
+            auth.advanceClock(1000);
+            await expect(auth.verifySessionCookie(cookie, true)).rejects.toMatchObject({
+                code: 'auth/session-cookie-expired',
+                message:
+                    'Firebase session cookie has expired. Get a fresh session cookie from your client app and try again (auth/session-cookie-expired). See https://firebase.google.com/docs/auth/admin/manage-cookies for details on how to retrieve a session cookie.',
+            });
+        });
+
+        it('keeps a token signed in during the second of revocation, and refuses it once revoked a second later', async () => {
+            vi.useFakeTimers({ toFake: ['Date'] });
+            vi.setSystemTime(new Date('2026-01-01T00:00:00.100Z'));
+            auth.seedUser({ uid: 'same-second' });
+            const idToken = auth.issueIdToken('same-second');
+
+            vi.setSystemTime(new Date('2026-01-01T00:00:00.900Z'));
+            await auth.revokeRefreshTokens('same-second');
+            await expect(auth.verifyIdToken(idToken, true)).resolves.toMatchObject({ uid: 'same-second' });
+
+            vi.setSystemTime(new Date('2026-01-01T00:00:01.000Z'));
+            await auth.revokeRefreshTokens('same-second');
+            await expect(auth.verifyIdToken(idToken, true)).rejects.toMatchObject({ code: 'auth/id-token-revoked' });
+        });
+
+        it('looks the user up only when checkRevoked is set, as real Firebase does', async () => {
+            auth.seedUser({ uid: 'gone' });
+            const idToken = auth.issueIdToken('gone');
+            const cookie = await auth.createSessionCookie(idToken, { expiresIn: FIVE_MINUTES });
+
+            await auth.deleteUser('gone');
+
+            await expect(auth.verifyIdToken(idToken)).resolves.toMatchObject({ uid: 'gone' });
+            await expect(auth.verifySessionCookie(cookie)).resolves.toMatchObject({ uid: 'gone' });
+            await expect(auth.verifyIdToken(idToken, true)).rejects.toMatchObject({ code: 'auth/user-not-found' });
+        });
+
+        it('refuses a token another stub issued', async () => {
+            const other = new StubAuth();
+            other.seedUser({ uid: 'stranger' });
+            auth.seedUser({ uid: 'stranger' });
+
+            await expect(auth.verifyIdToken(other.issueIdToken('stranger'))).rejects.toMatchObject({
+                code: 'auth/argument-error',
+                message: 'Firebase ID token has invalid signature. See https://firebase.google.com/docs/auth/admin/verify-id-tokens for details on how to retrieve an ID token.',
+            });
+        });
+
+        it('refuses a token issued for another project', async () => {
+            const other = new StubAuth({ projectId: 'other-project' });
+            other.seedUser({ uid: 'stranger' });
+
+            await expect(auth.verifyIdToken(other.issueIdToken('stranger'))).rejects.toMatchObject({
+                code: 'auth/argument-error',
+                message: expect.stringContaining('Firebase ID token has incorrect "aud" (audience) claim. Expected "test-project" but got "other-project".'),
+            });
+        });
+
+        it('refuses to sign in a disabled user', () => {
+            auth.seedUser({ uid: 'disabled', disabled: true });
+
+            expect(() => auth.issueIdToken('disabled')).toThrow(expect.objectContaining({ code: 'auth/user-disabled' }));
         });
     });
 

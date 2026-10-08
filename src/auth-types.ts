@@ -1,4 +1,4 @@
-import type { CreateRequest, GetUsersResult, ListUsersResult, UidIdentifier, UpdateRequest, UserRecord } from 'firebase-admin/auth';
+import type { CreateRequest, DecodedIdToken, GetUsersResult, ListUsersResult, SessionCookieOptions, UidIdentifier, UpdateRequest, UserRecord } from 'firebase-admin/auth';
 
 /**
  * Interface for Firebase Auth (Admin SDK) operations
@@ -13,4 +13,10 @@ export interface IAuth {
     updateUser(uid: string, properties: UpdateRequest): Promise<UserRecord>;
     listUsers(maxResults?: number, pageToken?: string): Promise<ListUsersResult>;
     deleteUser(uid: string): Promise<void>;
+
+    createCustomToken(uid: string, developerClaims?: object): Promise<string>;
+    verifyIdToken(idToken: string, checkRevoked?: boolean): Promise<DecodedIdToken>;
+    createSessionCookie(idToken: string, sessionCookieOptions: SessionCookieOptions): Promise<string>;
+    verifySessionCookie(sessionCookie: string, checkRevoked?: boolean): Promise<DecodedIdToken>;
+    revokeRefreshTokens(uid: string): Promise<void>;
 }

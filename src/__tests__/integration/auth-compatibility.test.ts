@@ -41,6 +41,20 @@ async function clearEmulatorAccounts(): Promise<void> {
     }
 }
 
+/** Signs a user in with a custom token through the emulator's Identity Toolkit REST API, returning the ID token */
+async function emulatorSignIn(auth: IAuth, uid: string): Promise<string> {
+    const response = await fetch(`http://${emulatorHost()}/identitytoolkit.googleapis.com/v1/accounts:signInWithCustomToken?key=fake-api-key`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: await auth.createCustomToken(uid), returnSecureToken: true }),
+    });
+    const body = (await response.json()) as { idToken?: string; };
+    if (!response.ok || !body.idToken) {
+        throw new Error(`Emulator sign-in failed: HTTP ${response.status} ${JSON.stringify(body)}`);
+    }
+    return body.idToken;
+}
+
 /** A Firebase metadata time: a UTC string within a few seconds of now */
 function expectRecentUtcString(value: string | null | undefined, label: string): void {
     expect(value, label).toBe(new Date(Date.parse(value!)).toUTCString());
@@ -60,11 +74,25 @@ describe('Auth Stub Compatibility - Integration Test', () => {
     });
 
     beforeEach(async () => {
-        stubAuth = new StubAuth();
+        stubAuth = new StubAuth({ projectId: EMULATOR_PROJECT_ID });
         if (emulatorAvailable) {
             await clearEmulatorAccounts();
         }
     });
+
+    /** An ID token for the user, from a custom-token sign-in */
+    async function signIn(auth: IAuth, mode: TestMode, uid: string): Promise<string> {
+        return mode === 'stub' ? stubAuth.issueIdToken(uid) : emulatorSignIn(auth, uid);
+    }
+
+    /** Lets the clock pass into a later second, which revocation needs to tell tokens apart */
+    async function passOneSecond(mode: TestMode): Promise<void> {
+        if (mode === 'stub') {
+            stubAuth.advanceClock(1000);
+        } else {
+            await new Promise((resolve) => setTimeout(resolve, 1100));
+        }
+    }
 
     async function testAllImplementations(testFn: (auth: IAuth, mode: TestMode) => Promise<void>) {
         await testFn(stubAuth, 'stub');
@@ -349,6 +377,213 @@ describe('Auth Stub Compatibility - Integration Test', () => {
         it('refuses a missing user', async () => {
             await testAllImplementations(async (auth, mode) => {
                 await expect(auth.deleteUser('missing'), `missing (${mode})`).rejects.toMatchObject({ code: 'auth/user-not-found' });
+            });
+        });
+    });
+
+    describe('ID tokens', () => {
+        it('carries the user in its claims', async () => {
+            await testAllImplementations(async (auth, mode) => {
+                await auth.createUser({
+                    uid: 'claimed',
+                    email: 'claimed@example.com',
+                    password: 'secret1',
+                    displayName: 'Claimed',
+                    photoURL: 'https://example.com/c.png',
+                    phoneNumber: '+15555550102',
+                    emailVerified: true,
+                });
+
+                const decoded = await auth.verifyIdToken(await signIn(auth, mode, 'claimed'), true);
+
+                expect(decoded, `claims (${mode})`).toEqual({
+                    name: 'Claimed',
+                    picture: 'https://example.com/c.png',
+                    email: 'claimed@example.com',
+                    email_verified: true,
+                    phone_number: '+15555550102',
+                    auth_time: decoded.iat,
+                    user_id: 'claimed',
+                    firebase: { identities: { email: ['claimed@example.com'], phone: ['+15555550102'] }, sign_in_provider: 'custom' },
+                    iat: expect.any(Number),
+                    exp: decoded.iat + 3600,
+                    aud: EMULATOR_PROJECT_ID,
+                    iss: `https://securetoken.google.com/${EMULATOR_PROJECT_ID}`,
+                    sub: 'claimed',
+                    uid: 'claimed',
+                });
+                expect(Math.abs(Date.now() / 1000 - decoded.iat), `iat is now (${mode})`).toBeLessThan(5);
+            });
+        });
+
+        it('carries no identities for a user without email or phone', async () => {
+            await testAllImplementations(async (auth, mode) => {
+                await auth.createUser({ uid: 'anonymous' });
+
+                const decoded = await auth.verifyIdToken(await signIn(auth, mode, 'anonymous'), true);
+
+                expect(decoded.email_verified, `email_verified (${mode})`).toBe(false);
+                expect(decoded.firebase, `firebase (${mode})`).toEqual({ identities: {}, sign_in_provider: 'custom' });
+                expect(decoded.email, `email (${mode})`).toBeUndefined();
+            });
+        });
+
+        it('records the sign-in in the user metadata', async () => {
+            await testAllImplementations(async (auth, mode) => {
+                await auth.createUser({ uid: 'signer' });
+
+                await signIn(auth, mode, 'signer');
+
+                const { metadata } = await auth.getUser('signer');
+                expectRecentUtcString(metadata.lastSignInTime, `lastSignInTime (${mode})`);
+                expect(metadata.lastRefreshTime, `lastRefreshTime (${mode})`).toBe(metadata.lastSignInTime);
+            });
+        });
+
+        it('creates the user when a custom token signs in a uid that does not exist', async () => {
+            await testAllImplementations(async (auth, mode) => {
+                await expect(auth.createCustomToken('newcomer'), `custom token without a user (${mode})`).resolves.toEqual(expect.any(String));
+
+                await signIn(auth, mode, 'newcomer');
+
+                const user = await auth.getUser('newcomer');
+                expect(user.email, `email (${mode})`).toBeUndefined();
+                expect(user.providerData, `providerData (${mode})`).toEqual([]);
+                expect(user.tokensValidAfterTime, `tokensValidAfterTime (${mode})`).toBeUndefined();
+                expect(user.metadata.lastSignInTime, `lastSignInTime (${mode})`).toBe(user.metadata.creationTime);
+            });
+        });
+
+        it('refuses a malformed token and a session cookie', async () => {
+            await testAllImplementations(async (auth, mode) => {
+                await auth.createUser({ uid: 'confused' });
+                const cookie = await auth.createSessionCookie(await signIn(auth, mode, 'confused'), { expiresIn: 5 * 60 * 1000 });
+
+                await expect(auth.verifyIdToken('garbage'), `garbage (${mode})`).rejects.toMatchObject({
+                    code: 'auth/argument-error',
+                    message:
+                        'Decoding Firebase ID token failed. Make sure you passed the entire string JWT which represents an ID token. See https://firebase.google.com/docs/auth/admin/verify-id-tokens for details on how to retrieve an ID token.',
+                });
+                await expect(auth.verifyIdToken(cookie), `session cookie (${mode})`).rejects.toMatchObject({
+                    code: 'auth/argument-error',
+                    message:
+                        `Firebase ID token has incorrect "iss" (issuer) claim. Expected "https://securetoken.google.com/${EMULATOR_PROJECT_ID}" but got "https://session.firebase.google.com/${EMULATOR_PROJECT_ID}". Make sure the ID token comes from the same Firebase project as the service account used to authenticate this SDK. See https://firebase.google.com/docs/auth/admin/verify-id-tokens for details on how to retrieve an ID token.`,
+                });
+            });
+        });
+    });
+
+    describe('session cookies', () => {
+        it('keeps the ID token claims, with its own issuer and expiry', async () => {
+            await testAllImplementations(async (auth, mode) => {
+                await auth.createUser({ uid: 'cookie-user', email: 'cookie-user@example.com', displayName: 'Cookie' });
+                const idToken = await auth.verifyIdToken(await signIn(auth, mode, 'cookie-user'), true);
+
+                const cookie = await auth.verifySessionCookie(await auth.createSessionCookie(await signIn(auth, mode, 'cookie-user'), { expiresIn: 10 * 60 * 1000 }), true);
+
+                expect(cookie, `claims (${mode})`).toEqual({
+                    ...idToken,
+                    auth_time: expect.any(Number),
+                    iss: `https://session.firebase.google.com/${EMULATOR_PROJECT_ID}`,
+                    iat: expect.any(Number),
+                    exp: cookie.iat + 600,
+                });
+            });
+        });
+
+        it('refuses a duration outside 5 minutes to 2 weeks', async () => {
+            await testAllImplementations(async (auth, mode) => {
+                await auth.createUser({ uid: 'impatient' });
+                const idToken = await signIn(auth, mode, 'impatient');
+                const durationError = {
+                    code: 'auth/invalid-session-cookie-duration',
+                    message: 'The session cookie duration must be a valid number in milliseconds between 5 minutes and 2 weeks.',
+                };
+
+                await expect(auth.createSessionCookie(idToken, { expiresIn: 5 * 60 * 1000 - 1 }), `too short (${mode})`).rejects.toMatchObject(durationError);
+                await expect(auth.createSessionCookie(idToken, { expiresIn: 14 * 24 * 60 * 60 * 1000 + 1000 }), `too long (${mode})`).rejects.toMatchObject(durationError);
+                // The duration is checked in whole seconds, rounded down
+                await expect(auth.createSessionCookie(idToken, { expiresIn: 14 * 24 * 60 * 60 * 1000 + 999 }), `two weeks (${mode})`).resolves.toEqual(expect.any(String));
+            });
+        });
+
+        it('refuses a malformed ID token, and a malformed cookie', async () => {
+            await testAllImplementations(async (auth, mode) => {
+                await expect(auth.createSessionCookie('garbage', { expiresIn: 5 * 60 * 1000 }), `create (${mode})`).rejects.toMatchObject({
+                    code: 'auth/invalid-id-token',
+                    message: 'The provided ID token is not a valid Firebase ID token.',
+                });
+                await expect(auth.verifySessionCookie('garbage'), `verify (${mode})`).rejects.toMatchObject({
+                    code: 'auth/argument-error',
+                    message:
+                        'Decoding Firebase session cookie failed. Make sure you passed the entire string JWT which represents a session cookie. See https://firebase.google.com/docs/auth/admin/manage-cookies for details on how to retrieve a session cookie.',
+                });
+            });
+        });
+    });
+
+    describe('revocation and account state', () => {
+        it('refuses tokens and cookies signed in before the second of revocation', async () => {
+            await testAllImplementations(async (auth, mode) => {
+                await auth.createUser({ uid: 'revoked' });
+                const idToken = await signIn(auth, mode, 'revoked');
+                const cookie = await auth.createSessionCookie(idToken, { expiresIn: 5 * 60 * 1000 });
+
+                await passOneSecond(mode);
+                await auth.revokeRefreshTokens('revoked');
+
+                expectRecentUtcString((await auth.getUser('revoked')).tokensValidAfterTime, `tokensValidAfterTime (${mode})`);
+                await expect(auth.verifyIdToken(idToken, true), `ID token (${mode})`).rejects.toMatchObject({
+                    code: 'auth/id-token-revoked',
+                    message: 'The Firebase ID token has been revoked.',
+                });
+                await expect(auth.verifySessionCookie(cookie, true), `cookie (${mode})`).rejects.toMatchObject({
+                    code: 'auth/session-cookie-revoked',
+                    message: 'The Firebase session cookie has been revoked.',
+                });
+                await expect(auth.createSessionCookie(idToken, { expiresIn: 5 * 60 * 1000 }), `new cookie (${mode})`).rejects.toMatchObject({
+                    code: 'auth/id-token-expired',
+                    message: 'The provided Firebase ID token is expired.',
+                });
+
+                await passOneSecond(mode);
+                await expect(auth.verifyIdToken(await signIn(auth, mode, 'revoked'), true), `fresh sign-in (${mode})`).resolves.toMatchObject({ uid: 'revoked' });
+            });
+        });
+
+        it('refuses a disabled user', async () => {
+            await testAllImplementations(async (auth, mode) => {
+                await auth.createUser({ uid: 'disabled' });
+                const idToken = await signIn(auth, mode, 'disabled');
+                const cookie = await auth.createSessionCookie(idToken, { expiresIn: 5 * 60 * 1000 });
+
+                await auth.updateUser('disabled', { disabled: true });
+
+                const userDisabled = { code: 'auth/user-disabled', message: 'The user record is disabled.' };
+                await expect(auth.verifyIdToken(idToken, true), `ID token (${mode})`).rejects.toMatchObject(userDisabled);
+                await expect(auth.verifySessionCookie(cookie, true), `cookie (${mode})`).rejects.toMatchObject(userDisabled);
+                await expect(auth.createSessionCookie(idToken, { expiresIn: 5 * 60 * 1000 }), `new cookie (${mode})`).rejects.toMatchObject(userDisabled);
+            });
+        });
+
+        it('refuses a deleted user', async () => {
+            await testAllImplementations(async (auth, mode) => {
+                await auth.createUser({ uid: 'deleted' });
+                const idToken = await signIn(auth, mode, 'deleted');
+                const cookie = await auth.createSessionCookie(idToken, { expiresIn: 5 * 60 * 1000 });
+
+                await auth.deleteUser('deleted');
+
+                const notFound = { code: 'auth/user-not-found' };
+                await expect(auth.verifyIdToken(idToken, true), `ID token (${mode})`).rejects.toMatchObject(notFound);
+                await expect(auth.verifySessionCookie(cookie, true), `cookie (${mode})`).rejects.toMatchObject(notFound);
+                await expect(auth.createSessionCookie(idToken, { expiresIn: 5 * 60 * 1000 }), `new cookie (${mode})`).rejects.toMatchObject(notFound);
+            });
+        });
+
+        it('refuses to revoke a missing user', async () => {
+            await testAllImplementations(async (auth, mode) => {
+                await expect(auth.revokeRefreshTokens('missing'), `missing (${mode})`).rejects.toMatchObject({ code: 'auth/user-not-found' });
             });
         });
     });

@@ -1,4 +1,4 @@
-import type { Auth, CreateRequest, GetUsersResult, ListUsersResult, UidIdentifier, UpdateRequest, UserRecord } from 'firebase-admin/auth';
+import type { Auth, CreateRequest, DecodedIdToken, GetUsersResult, ListUsersResult, SessionCookieOptions, UidIdentifier, UpdateRequest, UserRecord } from 'firebase-admin/auth';
 import type { IAuth } from './auth-types';
 
 /**
@@ -33,6 +33,26 @@ class AuthWrapper implements IAuth {
 
     deleteUser(uid: string): Promise<void> {
         return this.auth.deleteUser(uid);
+    }
+
+    createCustomToken(uid: string, developerClaims?: object): Promise<string> {
+        return this.auth.createCustomToken(uid, developerClaims);
+    }
+
+    verifyIdToken(idToken: string, checkRevoked?: boolean): Promise<DecodedIdToken> {
+        return this.auth.verifyIdToken(idToken, checkRevoked);
+    }
+
+    createSessionCookie(idToken: string, sessionCookieOptions: SessionCookieOptions): Promise<string> {
+        return this.auth.createSessionCookie(idToken, sessionCookieOptions);
+    }
+
+    verifySessionCookie(sessionCookie: string, checkRevoked?: boolean): Promise<DecodedIdToken> {
+        return this.auth.verifySessionCookie(sessionCookie, checkRevoked);
+    }
+
+    revokeRefreshTokens(uid: string): Promise<void> {
+        return this.auth.revokeRefreshTokens(uid);
     }
 }
 

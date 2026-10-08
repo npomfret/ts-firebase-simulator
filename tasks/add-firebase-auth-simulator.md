@@ -1,6 +1,6 @@
 # Add a Firebase Auth simulator
 
-**Status:** Phase 1 (users) done; phases 2–5 to do.
+**Status:** Phases 1 (users) and 2 (tokens) done; phases 3–5 to do.
 
 ## The issue
 
@@ -135,7 +135,7 @@ export class StubAuth implements IAuth {
     // Test controls
     /** Replaces any user with the same uid; refuses an email another user has. */
     seedUser(user: SeedUser): UserRecord;
-    /** An ID token for the user, as a sign-in would issue. */
+    /** Signs the user in as a custom-token sign-in would (creating a missing user) and returns its ID token. */
     issueIdToken(uid: string): string;
     /** The oobCode Firebase would put in the emailed link; as the matching generate*Link. */
     issueActionCode(email: string, requestType: 'PASSWORD_RESET' | 'VERIFY_EMAIL'): Promise<string>;
@@ -171,8 +171,16 @@ Differences from the consumer's stub, because the real service behaves otherwise
   The consumer's `reconcile-auth-accounts` test calls `listUsers` with
   `maxResults: 10_000`, which the real SDK refuses; that test changes in its
   migration.
-- ID tokens stay JWT-shaped (the consumer's driver inspects token shape);
-  custom tokens and session cookies are opaque.
+- Custom tokens, ID tokens and session cookies are all JWTs with the emulator's
+  claims, signed with a key private to each `StubAuth`, so only its own tokens
+  verify. (The consumer's driver inspects token shape.)
+- `createCustomToken` does not look the user up, as Firebase does not; the
+  consumer's stub refuses a missing user.
+- `issueIdToken` creates a user that does not exist, as a custom-token sign-in
+  does, and refuses a disabled one with `auth/user-disabled`.
+- `verifyIdToken` and `verifySessionCookie` look the user up (deleted, disabled,
+  revoked) only with `checkRevoked`, as real Firebase does. Against the emulator
+  the Admin SDK always looks it up, so parity tests pass `checkRevoked: true`.
 
 New exports, all additive, so a minor version: `IAuth`, `IAuthClient`,
 `createAuth`, `createAuthClient`, `AuthClientConfig`, `SignInResponse`,
@@ -221,10 +229,33 @@ test:with-emulator` and `npm run format:check` passing.
    `passwordHash`/`passwordSalt`; no custom claims; `getUsers` by uid only. The
    emulator's admin-created accounts showing a `lastSignInTime` may differ from
    real Firebase, which is not checked.
-2. **Tokens.** Custom tokens, ID tokens, session cookies, revocation,
-   `issueIdToken`, `advanceClock`. Parity: revoked and disabled users, deleted user
-   behind a cookie, revocation at one-second resolution. Expiry is checked in stub
-   unit tests only; an hour-long or five-minute wait is not practical in parity.
+2. [x] **Tokens.** `createCustomToken`, `verifyIdToken`, `createSessionCookie`,
+   `verifySessionCookie`, `revokeRefreshTokens`; `StubAuthOptions` (`projectId`),
+   `issueIdToken`, `advanceClock`. Parity: ID token claims, sign-in recorded in
+   metadata, a custom-token sign-in creating its user, malformed and
+   wrong-kind tokens, cookie claims and duration limits, revocation a second
+   later, disabled and deleted users. Stub unit tests cover what the emulator
+   cannot: expiry (an hour, five minutes), survival of a token signed in during
+   the revocation second, the unchecked path, foreign signatures and projects.
+   The emulator scripts now pass `--project demo-test-project`: without it the
+   emulator ran as `demo-no-project`, so REST sign-ins and Admin calls reached
+   different projects. Verified: `npm run build`, `npm run test:unit`
+   (118 passed), `npm run test:with-emulator` (103 passed, Auth on stub and
+   emulator), `npm run format:check`.
+
+   Emulator and SDK behaviour the stub mirrors: ID token claims (`name`,
+   `picture`, `email`, `email_verified`, `phone_number`, `firebase.identities`,
+   `sign_in_provider`), an hour's life; sign-in sets `lastSignInTime` and
+   `lastRefreshTime`; revocation compares `auth_time` with `tokensValidAfterTime`
+   in whole seconds; a cookie keeps the ID token's claims and `auth_time`, with
+   its own issuer, `iat` and `exp`; the cookie duration is checked in whole
+   seconds, rounded down; `createSessionCookie` refuses a revoked ID token as
+   `auth/id-token-expired`; the SDK's error codes and messages for each refusal.
+
+   Limitations: no validation of custom tokens' uid length or reserved claims;
+   which error wins when a token fails more than one check is not verified;
+   token signing is not Google's, so stub tokens verify only against their own
+   `StubAuth`.
 3. **Client sign-in.** `IAuthClient` sign-in methods, `IdentityToolkitError`,
    `createAuthClient`, `StubAuth.client()`. Parity: wrong password, unknown email,
    disabled user, invalid custom token, `returnSecureToken: false`.
