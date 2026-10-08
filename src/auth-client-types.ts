@@ -7,6 +7,10 @@ export interface IAuthClient {
     signInWithPassword(request: { email: string; password: string; returnSecureToken: boolean; }): Promise<SignInWithPasswordResponse>;
     /** `accounts:signInWithCustomToken` */
     signInWithCustomToken(request: { token: string; returnSecureToken: true; }): Promise<SignInWithCustomTokenResponse>;
+    /** `accounts:resetPassword`: without `newPassword` it reads a code of any type; with it, it uses a password-reset code */
+    resetPassword(request: { oobCode: string; newPassword?: string; }): Promise<ResetPasswordResponse>;
+    /** `accounts:update` with an `oobCode`: applies a VERIFY_EMAIL or VERIFY_AND_CHANGE_EMAIL code */
+    applyActionCode(request: { oobCode: string; }): Promise<UpdateAccountResponse>;
 }
 
 export interface SignInWithPasswordResponse {
@@ -23,6 +27,24 @@ export interface SignInWithCustomTokenResponse {
     refreshToken: string;
     /** The ID token's lifetime in seconds, e.g. "3600" */
     expiresIn: string;
+}
+
+/** The kinds of action code (oobCode) supported */
+export type ActionCodeRequestType = 'PASSWORD_RESET' | 'VERIFY_EMAIL' | 'VERIFY_AND_CHANGE_EMAIL';
+
+export interface ResetPasswordResponse {
+    requestType: ActionCodeRequestType;
+    /** The account email the code was issued for */
+    email: string;
+    /** A VERIFY_AND_CHANGE_EMAIL code's new email */
+    newEmail?: string;
+}
+
+export interface UpdateAccountResponse {
+    localId: string;
+    /** The account email, after any change the code made */
+    email: string;
+    emailVerified: boolean;
 }
 
 export interface AuthClientConfig {

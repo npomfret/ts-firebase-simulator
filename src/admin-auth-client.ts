@@ -1,4 +1,12 @@
-import { type AuthClientConfig, type IAuthClient, IdentityToolkitError, type SignInWithCustomTokenResponse, type SignInWithPasswordResponse } from './auth-client-types';
+import {
+    type AuthClientConfig,
+    type IAuthClient,
+    IdentityToolkitError,
+    type ResetPasswordResponse,
+    type SignInWithCustomTokenResponse,
+    type SignInWithPasswordResponse,
+    type UpdateAccountResponse,
+} from './auth-client-types';
 
 /**
  * Calls the Identity Toolkit REST API with fetch. A network failure is rethrown as is;
@@ -13,6 +21,14 @@ class IdentityToolkitClient implements IAuthClient {
 
     signInWithCustomToken(request: { token: string; returnSecureToken: true; }): Promise<SignInWithCustomTokenResponse> {
         return this.post('signInWithCustomToken', request);
+    }
+
+    resetPassword(request: { oobCode: string; newPassword?: string; }): Promise<ResetPasswordResponse> {
+        return this.post('resetPassword', request);
+    }
+
+    applyActionCode(request: { oobCode: string; }): Promise<UpdateAccountResponse> {
+        return this.post('update', request);
     }
 
     private async post<T>(method: string, body: object): Promise<T> {

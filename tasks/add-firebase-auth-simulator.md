@@ -1,6 +1,6 @@
 # Add a Firebase Auth simulator
 
-**Status:** Phases 1 (users), 2 (tokens) and 3 (client sign-in) done; phases 4–5 to do.
+**Status:** Phases 1 (users), 2 (tokens), 3 (client sign-in) and 4 (action codes) done; phase 5 to do.
 
 ## The issue
 
@@ -46,8 +46,8 @@ into the package.
 
 Signatures copied from `firebase-admin/auth` `BaseAuth`, limited to what is used.
 Types (`UserRecord`, `DecodedIdToken`, `CreateRequest`, `UpdateRequest`,
-`GetUsersResult`, `ListUsersResult`, `SessionCookieOptions`, `UidIdentifier`,
-`ActionCodeSettings`) come from `firebase-admin/auth`, as the Firestore types
+`GetUsersResult`, `ListUsersResult`, `SessionCookieOptions`, `UidIdentifier`)
+come from `firebase-admin/auth`, as the Firestore types
 come from `firebase-admin/firestore`.
 
 ```ts
@@ -66,16 +66,18 @@ export interface IAuth {
     verifySessionCookie(sessionCookie: string, checkRevoked?: boolean): Promise<DecodedIdToken>;
     revokeRefreshTokens(uid: string): Promise<void>;
 
-    generatePasswordResetLink(email: string, actionCodeSettings?: ActionCodeSettings): Promise<string>;
-    generateEmailVerificationLink(email: string, actionCodeSettings?: ActionCodeSettings): Promise<string>;
-    generateVerifyAndChangeEmailLink(email: string, newEmail: string, actionCodeSettings?: ActionCodeSettings): Promise<string>;
+    generatePasswordResetLink(email: string): Promise<string>;
+    generateEmailVerificationLink(email: string): Promise<string>;
+    generateVerifyAndChangeEmailLink(email: string, newEmail: string): Promise<string>;
 }
 
 export function createAuth(auth: Auth): IAuth; // admin-auth.ts
 ```
 
 `getUsers` takes `UidIdentifier[]` rather than `UserIdentifier[]`: only uid lookup
-is used, and a narrower parameter is still satisfied by the real `Auth`.
+is used, and a narrower parameter is still satisfied by the real `Auth`. The
+`generate*Link` calls leave out `actionCodeSettings` for the same reason: the
+consumer passes none, and the stub could not honour it.
 
 Errors: the real `Auth` throws `FirebaseAuthError`, which `firebase-admin` does not
 export. The stub throws an exported `StubAuthError extends Error` carrying the same
@@ -101,7 +103,8 @@ export interface IAuthClient {
 export interface SignInWithPasswordResponse { localId: string; email: string; idToken?: string; refreshToken?: string; expiresIn?: string; }
 /** A custom-token sign-in's response has no localId: the uid is the token's */
 export interface SignInWithCustomTokenResponse { idToken: string; refreshToken: string; expiresIn: string; }
-export interface ResetPasswordResponse { email: string; requestType: 'PASSWORD_RESET' | 'VERIFY_EMAIL' | 'VERIFY_AND_CHANGE_EMAIL'; newEmail?: string; }
+export type ActionCodeRequestType = 'PASSWORD_RESET' | 'VERIFY_EMAIL' | 'VERIFY_AND_CHANGE_EMAIL';
+export interface ResetPasswordResponse { requestType: ActionCodeRequestType; email: string; newEmail?: string; }
 export interface UpdateAccountResponse { localId: string; email: string; emailVerified: boolean; }
 
 /** Thrown by both implementations for a non-2xx response; the message is Firebase's. */
@@ -139,9 +142,9 @@ export class StubAuth implements IAuth {
     seedUser(user: SeedUser): UserRecord;
     /** Signs the user in as a custom-token sign-in would (creating a missing user) and returns its ID token. */
     issueIdToken(uid: string): string;
-    /** The oobCode Firebase would put in the emailed link; as the matching generate*Link. */
-    issueActionCode(email: string, requestType: 'PASSWORD_RESET' | 'VERIFY_EMAIL'): Promise<string>;
-    issueActionCode(email: string, requestType: 'VERIFY_AND_CHANGE_EMAIL', newEmail: string): Promise<string>;
+    /** The oobCode the matching generate*Link would put in its link, refused as it refuses. Synchronous, as the consumer calls it. */
+    issueActionCode(email: string, requestType: 'PASSWORD_RESET' | 'VERIFY_EMAIL'): string;
+    issueActionCode(email: string, requestType: 'VERIFY_AND_CHANGE_EMAIL', newEmail: string): string;
     advanceClock(ms: number): void;
     /** The next `count` calls of `operation` for `uid` throw `error`, leaving state unchanged. */
     failNext(operation: 'getUser' | 'updateUser', uid: string, count: number, error: Error): void;
@@ -186,7 +189,7 @@ Differences from the consumer's stub, because the real service behaves otherwise
 
 New exports, all additive, so a minor version: `IAuth`, `IAuthClient`,
 `createAuth`, `createAuthClient`, `AuthClientConfig`, `SignInWithPasswordResponse`,
-`SignInWithCustomTokenResponse`,
+`SignInWithCustomTokenResponse`, `ActionCodeRequestType`,
 `ResetPasswordResponse`, `UpdateAccountResponse`, `IdentityToolkitError`,
 `StubAuth`, `StubAuthOptions`, `StubAuthError`, `SeedUser`, `FailableAuthOperation`.
 
@@ -286,9 +289,37 @@ test:with-emulator` and `npm run format:check` passing.
    exchanged. A custom token with a foreign signature is refused as
    `INVALID_CUSTOM_TOKEN` with no detail, since the emulator does not check
    signatures.
-4. **Action codes.** `generate*Link`, `issueActionCode`, `resetPassword`,
-   `applyActionCode`. Parity: single use, wrong type for the call, reset marks the
-   email verified and revokes tokens, email change to an address taken meanwhile.
+4. [x] **Action codes.** `generate*Link`, `issueActionCode`, `resetPassword`,
+   `applyActionCode`. Parity: a reset code read twice then used once, a weak
+   password leaving the code usable, codes of the wrong type for the call left
+   usable, email verification and email change each applied once, an email change
+   to an address taken meanwhile, a code whose account's email has changed, an
+   unknown code, and the link refusals (unknown email, new email in use, own email).
+   Stub unit tests cover `issueActionCode` and `clear` removing codes. Verified:
+   `npm run build`, `npm run test:unit` (121 passed), `npm run test:with-emulator`
+   (119 passed, Auth on stub and emulator), `npm run format:check`.
+
+   Emulator and SDK behaviour the stub mirrors (probed, and read in the emulator's
+   source): reading a code (`resetPassword` without a new password) never uses it;
+   a code is used up once it passes its type and password checks, even if it then
+   fails because no user has its email any more, or because the new email was
+   taken meanwhile (`EMAIL_EXISTS`); a reset verifies the email and revokes
+   earlier tokens without setting `lastRefreshTime`, and gives a passwordless user
+   a password; verifying or changing an email revokes nothing; codes are held by
+   email, so they act on whichever user has that email when used; several codes
+   for one user are all valid; `generatePasswordResetLink` refuses an unknown email
+   with `auth/email-not-found`, the other two with `auth/user-not-found`, and an
+   email change to any address in use (the user's own included) with
+   `auth/email-already-exists`; links carry `mode` and `oobCode`.
+
+   Limitations: no code expiry, so no `EXPIRED_OOB_CODE`; a disabled user can use
+   its codes, as in the emulator (whether real Firebase answers `USER_DISABLED` is
+   not checked); applying a password-reset code answers HTTP 501 `PASSWORD_RESET`,
+   which is the emulator not implementing it, not checked against real Firebase;
+   no `MISSING_OOB_CODE` validation; `actionCodeSettings` (continue URL) not
+   supported; the stub's links have Firebase's hosted-action form
+   (`https://<project>.firebaseapp.com/__/auth/action?...`) without an `apiKey`,
+   while the emulator's point at itself.
 5. **Docs.** `examples/auth-basic.ts`, README section, CONTRIBUTING (Auth emulator;
    Auth has no real-Firebase mode, as Cloud Tasks has no emulator). Record here
    the coverage reached and any limitation found.

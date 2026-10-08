@@ -1,7 +1,15 @@
 import type { CreateRequest, DecodedIdToken, GetUsersResult, ListUsersResult, SessionCookieOptions, UidIdentifier, UpdateRequest, UserInfo, UserMetadata, UserRecord } from 'firebase-admin/auth';
 import { Buffer } from 'node:buffer';
 import { createHmac, randomBytes, randomInt } from 'node:crypto';
-import { type IAuthClient, IdentityToolkitError, type SignInWithCustomTokenResponse, type SignInWithPasswordResponse } from './auth-client-types';
+import {
+    type ActionCodeRequestType,
+    type IAuthClient,
+    IdentityToolkitError,
+    type ResetPasswordResponse,
+    type SignInWithCustomTokenResponse,
+    type SignInWithPasswordResponse,
+    type UpdateAccountResponse,
+} from './auth-client-types';
 import type { IAuth } from './auth-types';
 
 /**
@@ -48,6 +56,13 @@ interface StoredUser {
     validSinceSeconds?: number;
 }
 
+/** An action code (oobCode), held by the email it was issued for, as the emulator holds it */
+interface ActionCode {
+    requestType: ActionCodeRequestType;
+    email: string;
+    newEmail?: string;
+}
+
 const USER_NOT_FOUND = ['auth/user-not-found', 'There is no user record corresponding to the provided identifier.'] as const;
 const EMAIL_ALREADY_EXISTS = ['auth/email-already-exists', 'The email address is already in use by another account.'] as const;
 const UID_ALREADY_EXISTS = ['auth/uid-already-exists', 'The user with the provided uid already exists.'] as const;
@@ -55,8 +70,17 @@ const USER_DISABLED = ['auth/user-disabled', 'The user record is disabled.'] as 
 const INVALID_SESSION_COOKIE_DURATION = ['auth/invalid-session-cookie-duration', 'The session cookie duration must be a valid number in milliseconds between 5 minutes and 2 weeks.'] as const;
 const INVALID_ID_TOKEN = ['auth/invalid-id-token', 'The provided ID token is not a valid Firebase ID token.'] as const;
 const ID_TOKEN_EXPIRED = ['auth/id-token-expired', 'The provided Firebase ID token is expired.'] as const;
+const EMAIL_NOT_FOUND = ['auth/email-not-found', 'There is no user record corresponding to the provided email.'] as const;
 
 const INVALID_CUSTOM_TOKEN_FORMAT = 'INVALID_CUSTOM_TOKEN : Invalid assertion format';
+const MIN_PASSWORD_LENGTH = 6;
+
+/** The `mode` an action link carries for each kind of code */
+const ACTION_LINK_MODES: Record<ActionCodeRequestType, string> = {
+    PASSWORD_RESET: 'resetPassword',
+    VERIFY_EMAIL: 'verifyEmail',
+    VERIFY_AND_CHANGE_EMAIL: 'verifyAndChangeEmail',
+};
 
 const MAX_GET_USERS_IDENTIFIERS = 100;
 const MAX_LIST_USERS_RESULTS = 1000;
@@ -111,6 +135,7 @@ export class StubAuth implements IAuth {
     private readonly projectId: string;
     private readonly users = new Map<string, StoredUser>();
     private readonly failures = new Map<string, { remaining: number; error: Error; }>();
+    private readonly actionCodes = new Map<string, ActionCode>();
     /** Signs the stub's tokens, standing in for Google's keys: only tokens this stub issued verify */
     private readonly signingKey = randomBytes(32);
     /** How far the stub's clock is ahead of the real one, by what `advanceClock` added */
@@ -118,6 +143,8 @@ export class StubAuth implements IAuth {
     private readonly authClient: IAuthClient = {
         signInWithPassword: async (request) => this.signInWithPassword(request.email, request.password),
         signInWithCustomToken: async (request) => this.signInWithCustomToken(request.token),
+        resetPassword: async (request) => this.resetPassword(request.oobCode, request.newPassword),
+        applyActionCode: async (request) => this.applyActionCode(request.oobCode),
     };
 
     constructor(options: StubAuthOptions = {}) {
@@ -279,6 +306,18 @@ export class StubAuth implements IAuth {
         this.users.set(uid, { ...user, validSinceSeconds: this.nowSeconds() });
     }
 
+    async generatePasswordResetLink(email: string): Promise<string> {
+        return this.actionLink(this.issueActionCode(email, 'PASSWORD_RESET'), 'PASSWORD_RESET');
+    }
+
+    async generateEmailVerificationLink(email: string): Promise<string> {
+        return this.actionLink(this.issueActionCode(email, 'VERIFY_EMAIL'), 'VERIFY_EMAIL');
+    }
+
+    async generateVerifyAndChangeEmailLink(email: string, newEmail: string): Promise<string> {
+        return this.actionLink(this.issueActionCode(email, 'VERIFY_AND_CHANGE_EMAIL', newEmail), 'VERIFY_AND_CHANGE_EMAIL');
+    }
+
     // Test controls
 
     /**
@@ -319,9 +358,35 @@ export class StubAuth implements IAuth {
         this.clockOffsetMs += ms;
     }
 
-    /** Removes every user and pending failure. */
+    /**
+     * The oobCode the matching `generate*Link` would put in its link, refused as it refuses:
+     * an unknown email, and a new email that another user has.
+     */
+    issueActionCode(email: string, requestType: 'PASSWORD_RESET' | 'VERIFY_EMAIL'): string;
+    issueActionCode(email: string, requestType: 'VERIFY_AND_CHANGE_EMAIL', newEmail: string): string;
+    issueActionCode(email: string, requestType: ActionCodeRequestType, newEmail?: string): string {
+        const user = this.findByEmail(email);
+        if (!user) {
+            // As the Admin SDK: a password reset names the email, the other links the user
+            const [code, message] = requestType === 'PASSWORD_RESET' ? EMAIL_NOT_FOUND : USER_NOT_FOUND;
+            throw new StubAuthError(code, message);
+        }
+        const actionCode: ActionCode = { requestType, email: user.email! };
+        if (requestType === 'VERIFY_AND_CHANGE_EMAIL') {
+            if (this.findByEmail(newEmail!)) {
+                throw new StubAuthError(...EMAIL_ALREADY_EXISTS);
+            }
+            actionCode.newEmail = normalizeEmail(newEmail!);
+        }
+        const oobCode = randomBytes(40).toString('base64url');
+        this.actionCodes.set(oobCode, actionCode);
+        return oobCode;
+    }
+
+    /** Removes every user, action code and pending failure. */
     clear(): void {
         this.users.clear();
+        this.actionCodes.clear();
         this.failures.clear();
     }
 
@@ -357,6 +422,68 @@ export class StubAuth implements IAuth {
         }
         const idToken = this.signIn(uid, 'custom', claims);
         return { idToken, refreshToken: newRefreshToken(), expiresIn: String(ID_TOKEN_LIFETIME_SECONDS) };
+    }
+
+    /**
+     * As the emulator: a code is used up once it gets past its type and password checks, and
+     * then acts on whichever user has the email it was issued for, if any does. A disabled user
+     * is not refused.
+     */
+    private resetPassword(oobCode: string, newPassword: string | undefined): ResetPasswordResponse {
+        const actionCode = this.requireActionCode(oobCode);
+        // As the emulator: without a new password (or with an empty one) the code is only read
+        if (newPassword) {
+            if (actionCode.requestType !== 'PASSWORD_RESET') {
+                throw new IdentityToolkitError(400, 'INVALID_OOB_CODE');
+            }
+            if (newPassword.length < MIN_PASSWORD_LENGTH) {
+                throw new IdentityToolkitError(400, `WEAK_PASSWORD : Password should be at least ${MIN_PASSWORD_LENGTH} characters`);
+            }
+            const user = this.useActionCode(oobCode, actionCode);
+            // As the emulator: a reset verifies the email and revokes earlier tokens, without refreshing the account
+            this.users.set(user.uid, { ...user, password: newPassword, emailVerified: true, validSinceSeconds: this.nowSeconds() });
+        }
+        return { requestType: actionCode.requestType, email: actionCode.email, ...(actionCode.newEmail === undefined ? {} : { newEmail: actionCode.newEmail }) };
+    }
+
+    /** As the emulator: an email change neither revokes tokens nor needs the new email to be free until it is applied */
+    private applyActionCode(oobCode: string): UpdateAccountResponse {
+        const actionCode = this.requireActionCode(oobCode);
+        if (actionCode.requestType === 'PASSWORD_RESET') {
+            // The emulator's answer: it does not implement this code type here
+            throw new IdentityToolkitError(501, actionCode.requestType);
+        }
+        const user = this.useActionCode(oobCode, actionCode);
+        if (actionCode.newEmail !== undefined && this.findByEmail(actionCode.newEmail)) {
+            throw new IdentityToolkitError(400, 'EMAIL_EXISTS');
+        }
+        const updated: StoredUser = { ...user, email: actionCode.newEmail ?? user.email, emailVerified: true };
+        this.users.set(user.uid, updated);
+        return { localId: updated.uid, email: updated.email!, emailVerified: updated.emailVerified };
+    }
+
+    private requireActionCode(oobCode: string): ActionCode {
+        const actionCode = this.actionCodes.get(oobCode);
+        if (!actionCode) {
+            throw new IdentityToolkitError(400, 'INVALID_OOB_CODE');
+        }
+        return actionCode;
+    }
+
+    /** Uses the code up, and returns the user that has its email */
+    private useActionCode(oobCode: string, actionCode: ActionCode): StoredUser {
+        this.actionCodes.delete(oobCode);
+        const user = this.findByEmail(actionCode.email);
+        if (!user) {
+            throw new IdentityToolkitError(400, 'INVALID_OOB_CODE');
+        }
+        return user;
+    }
+
+    /** A link of the form Firebase sends, carrying the code */
+    private actionLink(oobCode: string, requestType: ActionCodeRequestType): string {
+        const query = new URLSearchParams({ mode: ACTION_LINK_MODES[requestType], oobCode, lang: 'en' });
+        return `https://${this.projectId}.firebaseapp.com/__/auth/action?${query}`;
     }
 
     /** A custom token's uid and developer claims, refused as the emulator refuses it, or for a signature not this stub's */

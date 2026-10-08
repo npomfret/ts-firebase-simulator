@@ -20,7 +20,16 @@ export { createAuthClient } from './admin-auth-client';
 export { createCloudTasksClient } from './admin-cloudtasks';
 export { createFirestoreDatabase } from './admin-firestore';
 export { createStorage } from './admin-storage';
-export { type AuthClientConfig, type IAuthClient, IdentityToolkitError, type SignInWithCustomTokenResponse, type SignInWithPasswordResponse } from './auth-client-types';
+export {
+    type ActionCodeRequestType,
+    type AuthClientConfig,
+    type IAuthClient,
+    IdentityToolkitError,
+    type ResetPasswordResponse,
+    type SignInWithCustomTokenResponse,
+    type SignInWithPasswordResponse,
+    type UpdateAccountResponse,
+} from './auth-client-types';
 export type { IAuth } from './auth-types';
 export type { ICloudTasksClient } from './cloudtasks-types';
 export type { GetSignedUrlConfig, IStorage, IStorageBucket, IStorageFile, StorageFileContent, StorageFileMetadata, StorageSaveOptions } from './storage-types';

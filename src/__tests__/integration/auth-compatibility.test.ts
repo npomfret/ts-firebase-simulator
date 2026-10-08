@@ -59,6 +59,11 @@ async function emulatorSignIn(auth: IAuth, uid: string): Promise<string> {
     return body.idToken;
 }
 
+/** The oobCode an action link carries */
+function oobCodeOf(link: string): string {
+    return new URL(link).searchParams.get('oobCode')!;
+}
+
 /** A Firebase metadata time: a UTC string within a few seconds of now */
 function expectRecentUtcString(value: string | null | undefined, label: string): void {
     expect(value, label).toBe(new Date(Date.parse(value!)).toUTCString());
@@ -683,6 +688,167 @@ describe('Auth Stub Compatibility - Integration Test', () => {
                     `INVALID_CUSTOM_TOKEN : ((Invalid aud (audience): ${EMULATOR_PROJECT_ID} Note: Firebase ID Tokens / third-party tokens cannot be used with signInWithCustomToken.))`,
                     `ID token (${mode})`,
                 );
+            });
+        });
+    });
+
+    describe('action codes', () => {
+        it('reads a password-reset code without using it, then resets the password once', async () => {
+            await testAllImplementations(async (auth, mode, client) => {
+                await auth.createUser({ uid: 'forgetful', email: 'forgetful@example.com', password: 'secret1' });
+                const idToken = await signIn(auth, mode, 'forgetful');
+                const before = await auth.getUser('forgetful');
+                const link = await auth.generatePasswordResetLink('Forgetful@Example.com');
+                const oobCode = oobCodeOf(link);
+                const read = { requestType: 'PASSWORD_RESET', email: 'forgetful@example.com' };
+
+                expect(new URL(link).searchParams.get('mode'), `mode (${mode})`).toBe('resetPassword');
+                expect(await client.resetPassword({ oobCode }), `first read (${mode})`).toMatchObject(read);
+                expect(await client.resetPassword({ oobCode }), `second read (${mode})`).toMatchObject(read);
+
+                await passOneSecond(mode);
+                const reset = await client.resetPassword({ oobCode, newPassword: 'secret2' });
+
+                expect(reset, `reset (${mode})`).toMatchObject(read);
+                expect(reset.newEmail, `newEmail (${mode})`).toBeUndefined();
+                const user = await auth.getUser('forgetful');
+                expect(user.emailVerified, `emailVerified (${mode})`).toBe(true);
+                expect(user.tokensValidAfterTime, `tokensValidAfterTime (${mode})`).not.toBe(before.tokensValidAfterTime);
+                expectRecentUtcString(user.tokensValidAfterTime, `tokensValidAfterTime (${mode})`);
+                expect(user.metadata.lastRefreshTime, `lastRefreshTime (${mode})`).toBe(before.metadata.lastRefreshTime);
+                await expect(auth.verifyIdToken(idToken, true), `old ID token (${mode})`).rejects.toMatchObject({ code: 'auth/id-token-revoked' });
+                await expect(client.signInWithPassword({ email: 'forgetful@example.com', password: 'secret2', returnSecureToken: true }), `new password (${mode})`).resolves.toMatchObject({
+                    localId: 'forgetful',
+                });
+                await expectIdentityToolkitError(client.resetPassword({ oobCode, newPassword: 'secret3' }), 'INVALID_OOB_CODE', `reset again (${mode})`);
+                await expectIdentityToolkitError(client.resetPassword({ oobCode }), 'INVALID_OOB_CODE', `read again (${mode})`);
+            });
+        });
+
+        it('refuses a weak password, leaving the code usable', async () => {
+            await testAllImplementations(async (auth, mode, client) => {
+                await auth.createUser({ uid: 'weak', email: 'weak@example.com', password: 'secret1' });
+                const oobCode = oobCodeOf(await auth.generatePasswordResetLink('weak@example.com'));
+
+                await expectIdentityToolkitError(client.resetPassword({ oobCode, newPassword: '12345' }), 'WEAK_PASSWORD : Password should be at least 6 characters', `weak (${mode})`);
+                await expect(client.resetPassword({ oobCode, newPassword: '123456' }), `strong enough (${mode})`).resolves.toMatchObject({ requestType: 'PASSWORD_RESET' });
+            });
+        });
+
+        it('refuses a code of the wrong type for the call, leaving it usable', async () => {
+            await testAllImplementations(async (auth, mode, client) => {
+                await auth.createUser({ uid: 'mixed', email: 'mixed@example.com', password: 'secret1' });
+                const verifyCode = oobCodeOf(await auth.generateEmailVerificationLink('mixed@example.com'));
+                const resetCode = oobCodeOf(await auth.generatePasswordResetLink('mixed@example.com'));
+
+                await expectIdentityToolkitError(client.resetPassword({ oobCode: verifyCode, newPassword: 'secret2' }), 'INVALID_OOB_CODE', `verify code reset (${mode})`);
+                // The emulator does not implement applying a password-reset code; what real Firebase answers is not checked
+                const error = await client.applyActionCode({ oobCode: resetCode }).then(() => undefined, (thrown: unknown) => thrown);
+                expect(error, `reset code applied (${mode})`).toBeInstanceOf(IdentityToolkitError);
+                expect(error, `reset code applied (${mode})`).toMatchObject({ status: 501, reason: 'PASSWORD_RESET' });
+
+                await expect(client.resetPassword({ oobCode: verifyCode }), `verify code (${mode})`).resolves.toMatchObject({ requestType: 'VERIFY_EMAIL' });
+                await expect(client.resetPassword({ oobCode: resetCode }), `reset code (${mode})`).resolves.toMatchObject({ requestType: 'PASSWORD_RESET' });
+            });
+        });
+
+        it('verifies an email once, without revoking tokens', async () => {
+            await testAllImplementations(async (auth, mode, client) => {
+                await auth.createUser({ uid: 'unverified', email: 'unverified@example.com' });
+                const idToken = await signIn(auth, mode, 'unverified');
+                const link = await auth.generateEmailVerificationLink('Unverified@Example.com');
+                const oobCode = oobCodeOf(link);
+
+                expect(new URL(link).searchParams.get('mode'), `mode (${mode})`).toBe('verifyEmail');
+                expect(await client.resetPassword({ oobCode }), `read (${mode})`).toMatchObject({ requestType: 'VERIFY_EMAIL', email: 'unverified@example.com' });
+
+                await passOneSecond(mode);
+                const applied = await client.applyActionCode({ oobCode });
+
+                expect(applied, `applied (${mode})`).toMatchObject({ localId: 'unverified', email: 'unverified@example.com', emailVerified: true });
+                const user = await auth.getUser('unverified');
+                expect(user.emailVerified, `emailVerified (${mode})`).toBe(true);
+                expect(user.tokensValidAfterTime, `tokensValidAfterTime (${mode})`).toBeUndefined();
+                await expect(auth.verifyIdToken(idToken, true), `ID token (${mode})`).resolves.toMatchObject({ uid: 'unverified' });
+                await expectIdentityToolkitError(client.applyActionCode({ oobCode }), 'INVALID_OOB_CODE', `applied again (${mode})`);
+            });
+        });
+
+        it('changes the email once, verified and without revoking tokens', async () => {
+            await testAllImplementations(async (auth, mode, client) => {
+                await auth.createUser({ uid: 'mover', email: 'mover@example.com' });
+                const idToken = await signIn(auth, mode, 'mover');
+                const link = await auth.generateVerifyAndChangeEmailLink('Mover@Example.com', 'Moved@Example.com');
+                const oobCode = oobCodeOf(link);
+
+                expect(new URL(link).searchParams.get('mode'), `mode (${mode})`).toBe('verifyAndChangeEmail');
+                expect(await client.resetPassword({ oobCode }), `read (${mode})`).toMatchObject({
+                    requestType: 'VERIFY_AND_CHANGE_EMAIL',
+                    email: 'mover@example.com',
+                    newEmail: 'moved@example.com',
+                });
+
+                await passOneSecond(mode);
+                const applied = await client.applyActionCode({ oobCode });
+
+                expect(applied, `applied (${mode})`).toMatchObject({ localId: 'mover', email: 'moved@example.com', emailVerified: true });
+                expect((await auth.getUserByEmail('moved@example.com')).uid, `new email (${mode})`).toBe('mover');
+                await expect(auth.getUserByEmail('mover@example.com'), `old email (${mode})`).rejects.toMatchObject({ code: 'auth/user-not-found' });
+                expect((await auth.getUser('mover')).tokensValidAfterTime, `tokensValidAfterTime (${mode})`).toBeUndefined();
+                await expect(auth.verifyIdToken(idToken, true), `ID token (${mode})`).resolves.toMatchObject({ uid: 'mover' });
+                await expectIdentityToolkitError(client.applyActionCode({ oobCode }), 'INVALID_OOB_CODE', `applied again (${mode})`);
+            });
+        });
+
+        it('refuses an email change to an address taken meanwhile, using the code up', async () => {
+            await testAllImplementations(async (auth, mode, client) => {
+                await auth.createUser({ uid: 'slow', email: 'slow@example.com' });
+                const oobCode = oobCodeOf(await auth.generateVerifyAndChangeEmailLink('slow@example.com', 'wanted@example.com'));
+                await auth.createUser({ uid: 'fast', email: 'wanted@example.com' });
+
+                await expectIdentityToolkitError(client.applyActionCode({ oobCode }), 'EMAIL_EXISTS', `taken (${mode})`);
+
+                expect((await auth.getUser('slow')).email, `email (${mode})`).toBe('slow@example.com');
+                await expectIdentityToolkitError(client.resetPassword({ oobCode }), 'INVALID_OOB_CODE', `read after (${mode})`);
+            });
+        });
+
+        it('refuses a code whose account no longer has its email', async () => {
+            await testAllImplementations(async (auth, mode, client) => {
+                await auth.createUser({ uid: 'renamed', email: 'before@example.com', password: 'secret1' });
+                const resetCode = oobCodeOf(await auth.generatePasswordResetLink('before@example.com'));
+                const verifyCode = oobCodeOf(await auth.generateEmailVerificationLink('before@example.com'));
+
+                await auth.updateUser('renamed', { email: 'after@example.com' });
+
+                await expectIdentityToolkitError(client.resetPassword({ oobCode: resetCode, newPassword: 'secret2' }), 'INVALID_OOB_CODE', `reset (${mode})`);
+                await expectIdentityToolkitError(client.applyActionCode({ oobCode: verifyCode }), 'INVALID_OOB_CODE', `verify (${mode})`);
+            });
+        });
+
+        it('refuses an unknown code', async () => {
+            await testAllImplementations(async (_auth, mode, client) => {
+                await expectIdentityToolkitError(client.resetPassword({ oobCode: 'unknown' }), 'INVALID_OOB_CODE', `read (${mode})`);
+                await expectIdentityToolkitError(client.resetPassword({ oobCode: 'unknown', newPassword: 'secret1' }), 'INVALID_OOB_CODE', `reset (${mode})`);
+                await expectIdentityToolkitError(client.applyActionCode({ oobCode: 'unknown' }), 'INVALID_OOB_CODE', `apply (${mode})`);
+            });
+        });
+
+        it('refuses a link for an unknown email, and an email change to one in use', async () => {
+            await testAllImplementations(async (auth, mode) => {
+                await auth.createUser({ uid: 'settled', email: 'settled@example.com' });
+                await auth.createUser({ uid: 'neighbour', email: 'neighbour@example.com' });
+
+                await expect(auth.generatePasswordResetLink('nobody@example.com'), `reset (${mode})`).rejects.toMatchObject({
+                    code: 'auth/email-not-found',
+                    message: 'There is no user record corresponding to the provided email.',
+                });
+                const userNotFound = { code: 'auth/user-not-found', message: 'There is no user record corresponding to the provided identifier.' };
+                await expect(auth.generateEmailVerificationLink('nobody@example.com'), `verify (${mode})`).rejects.toMatchObject(userNotFound);
+                await expect(auth.generateVerifyAndChangeEmailLink('nobody@example.com', 'free@example.com'), `change (${mode})`).rejects.toMatchObject(userNotFound);
+                const emailExists = { code: 'auth/email-already-exists', message: 'The email address is already in use by another account.' };
+                await expect(auth.generateVerifyAndChangeEmailLink('settled@example.com', 'Neighbour@Example.com'), `taken (${mode})`).rejects.toMatchObject(emailExists);
+                await expect(auth.generateVerifyAndChangeEmailLink('settled@example.com', 'settled@example.com'), `own (${mode})`).rejects.toMatchObject(emailExists);
             });
         });
     });

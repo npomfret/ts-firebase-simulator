@@ -182,6 +182,20 @@ describe('StubAuth', () => {
                 reason: 'INVALID_CUSTOM_TOKEN',
             });
         });
+
+        it('accepts the action codes issueActionCode issues', async () => {
+            auth.seedUser({ uid: 'issued', email: 'issued@example.com' });
+
+            const oobCode = auth.issueActionCode('Issued@Example.com', 'VERIFY_AND_CHANGE_EMAIL', 'Changed@Example.com');
+
+            await expect(auth.client().resetPassword({ oobCode })).resolves.toEqual({ requestType: 'VERIFY_AND_CHANGE_EMAIL', email: 'issued@example.com', newEmail: 'changed@example.com' });
+            await expect(auth.client().applyActionCode({ oobCode })).resolves.toEqual({ localId: 'issued', email: 'changed@example.com', emailVerified: true });
+        });
+
+        it('refuses to issue an action code for an unknown email, as the links refuse it', () => {
+            expect(() => auth.issueActionCode('nobody@example.com', 'PASSWORD_RESET')).toThrow(expect.objectContaining({ code: 'auth/email-not-found' }));
+            expect(() => auth.issueActionCode('nobody@example.com', 'VERIFY_EMAIL')).toThrow(expect.objectContaining({ code: 'auth/user-not-found' }));
+        });
     });
 
     it('returns records that changing the stub does not alter', async () => {
@@ -192,14 +206,16 @@ describe('StubAuth', () => {
         expect(created.displayName).toBe('Before');
     });
 
-    it('clear removes every user and pending failure', async () => {
+    it('clear removes every user, action code and pending failure', async () => {
         auth.seedUser({ uid: 'cleared', email: 'cleared@example.com' });
         auth.failNext('getUser', 'cleared', 1, new Error('Auth unavailable'));
+        const oobCode = auth.issueActionCode('cleared@example.com', 'VERIFY_EMAIL');
 
         auth.clear();
 
         expect(auth.remainingFailures('getUser', 'cleared')).toBe(0);
         await expect(auth.getUser('cleared')).rejects.toMatchObject({ code: 'auth/user-not-found' });
         expect((await auth.listUsers()).users).toEqual([]);
+        await expect(auth.client().resetPassword({ oobCode })).rejects.toMatchObject({ reason: 'INVALID_OOB_CODE' });
     });
 });

@@ -54,6 +54,18 @@ class AuthWrapper implements IAuth {
     revokeRefreshTokens(uid: string): Promise<void> {
         return this.auth.revokeRefreshTokens(uid);
     }
+
+    generatePasswordResetLink(email: string): Promise<string> {
+        return this.auth.generatePasswordResetLink(email);
+    }
+
+    generateEmailVerificationLink(email: string): Promise<string> {
+        return this.auth.generateEmailVerificationLink(email);
+    }
+
+    generateVerifyAndChangeEmailLink(email: string, newEmail: string): Promise<string> {
+        return this.auth.generateVerifyAndChangeEmailLink(email, newEmail);
+    }
 }
 
 /**

@@ -19,4 +19,9 @@ export interface IAuth {
     createSessionCookie(idToken: string, sessionCookieOptions: SessionCookieOptions): Promise<string>;
     verifySessionCookie(sessionCookie: string, checkRevoked?: boolean): Promise<DecodedIdToken>;
     revokeRefreshTokens(uid: string): Promise<void>;
+
+    /** Without `actionCodeSettings`, which is not supported */
+    generatePasswordResetLink(email: string): Promise<string>;
+    generateEmailVerificationLink(email: string): Promise<string>;
+    generateVerifyAndChangeEmailLink(email: string, newEmail: string): Promise<string>;
 }
