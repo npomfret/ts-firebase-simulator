@@ -99,7 +99,7 @@ npm run test:with-emulator
 ```
 
 This command:
-1. Starts the Firestore and Storage emulators
+1. Starts the Auth, Firestore and Storage emulators
 2. Sets the required environment variables automatically
 3. Runs integration tests against all available modes
 4. Shuts down emulators when tests complete
@@ -124,6 +124,7 @@ The emulators are configured in `firebase.json`:
 |----------|------|---------------------|
 | Firestore | 8080 | `FIRESTORE_EMULATOR_HOST=127.0.0.1:8080` |
 | Storage | 9199 | `FIREBASE_STORAGE_EMULATOR_HOST=127.0.0.1:9199` |
+| Auth | 9099 | `FIREBASE_AUTH_EMULATOR_HOST=127.0.0.1:9099` |
 | UI | 4000 | http://localhost:4000 |
 
 ### Cloud Tasks Note
@@ -131,6 +132,10 @@ The emulators are configured in `firebase.json`:
 Cloud Tasks does **not** have an official Firebase emulator. When running in emulator mode:
 - Firestore and Storage tests run against the emulator
 - Cloud Tasks tests continue to use the stub implementation
+
+### Auth Note
+
+Auth tests run against the stub and the emulator only; there is no real-Firebase mode. Running them against a real project would create real accounts, and would need a web API key and the Email/Password provider enabled. The emulators run as the project `demo-test-project`, so the Admin SDK and the REST client reach the same accounts.
 
 ## Commands
 

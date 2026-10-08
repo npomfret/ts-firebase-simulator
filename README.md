@@ -8,6 +8,7 @@ The easiest way to understand it to look at the [examples](examples/) directory 
 
 - Firestore CRUD, queries, transactions, triggers
 - Cloud Storage operations
+- Auth users, sign-in, tokens and action codes
 - Cloud Tasks creation and assertions
 - Dependency injection patterns
 
@@ -22,7 +23,7 @@ class MyService {
 }
 ```
 
-Firebase's SDK exports concrete classes (`Firestore`, `CloudTasksClient`, `Storage`) without corresponding interfaces. This means:
+Firebase's SDK exports concrete classes (`Firestore`, `CloudTasksClient`, `Storage`, `Auth`) without corresponding interfaces. This means:
 - You can't create mock implementations for unit testing
 - You're forced to use the Firebase Emulator for all tests (slow)
 - Dependency injection patterns don't work
@@ -30,9 +31,9 @@ Firebase's SDK exports concrete classes (`Firestore`, `CloudTasksClient`, `Stora
 ## The Solution
 
 This package provides:
-1. **Interfaces** (`IFirestoreDatabase`, `ICloudTasksClient`, `IStorage`) that mirror Firebase's API
-2. **Stub implementations** (`StubFirestoreDatabase`, `StubCloudTasksClient`, `StubStorage`) for fast, in-memory unit tests
-3. **Wrapper factories** (`createFirestoreDatabase`, `createCloudTasksClient`, `createStorage`) that adapt real Firebase instances to the interfaces
+1. **Interfaces** (`IFirestoreDatabase`, `ICloudTasksClient`, `IStorage`, `IAuth`, `IAuthClient`) that mirror Firebase's API
+2. **Stub implementations** (`StubFirestoreDatabase`, `StubCloudTasksClient`, `StubStorage`, `StubAuth`) for fast, in-memory unit tests
+3. **Wrapper factories** (`createFirestoreDatabase`, `createCloudTasksClient`, `createStorage`, `createAuth`, `createAuthClient`) that adapt real Firebase instances to the interfaces
 
 ```typescript
 import { IFirestoreDatabase, StubFirestoreDatabase, createFirestoreDatabase } from 'ts-firebase-simulator';
@@ -135,6 +136,45 @@ interface IStorageFile {
 }
 ```
 
+### IAuth
+
+Use instead of `Auth` from `firebase-admin/auth`. The subset supported, with the same signatures and `firebase-admin/auth` types:
+
+```typescript
+interface IAuth {
+    createUser(properties: CreateRequest): Promise<UserRecord>;
+    getUser(uid: string): Promise<UserRecord>;
+    getUsers(identifiers: UidIdentifier[]): Promise<GetUsersResult>; // by uid only
+    getUserByEmail(email: string): Promise<UserRecord>;
+    updateUser(uid: string, properties: UpdateRequest): Promise<UserRecord>;
+    listUsers(maxResults?: number, pageToken?: string): Promise<ListUsersResult>;
+    deleteUser(uid: string): Promise<void>;
+
+    createCustomToken(uid: string, developerClaims?: object): Promise<string>;
+    verifyIdToken(idToken: string, checkRevoked?: boolean): Promise<DecodedIdToken>;
+    createSessionCookie(idToken: string, sessionCookieOptions: SessionCookieOptions): Promise<string>;
+    verifySessionCookie(sessionCookie: string, checkRevoked?: boolean): Promise<DecodedIdToken>;
+    revokeRefreshTokens(uid: string): Promise<void>;
+
+    generatePasswordResetLink(email: string): Promise<string>; // no actionCodeSettings
+    generateEmailVerificationLink(email: string): Promise<string>;
+    generateVerifyAndChangeEmailLink(email: string, newEmail: string): Promise<string>;
+}
+```
+
+### IAuthClient
+
+The Firebase Auth REST API (Identity Toolkit) calls a server makes with a web API key, which the Admin SDK does not cover. An error response throws an `IdentityToolkitError` with Firebase's `status`, `message` and `reason` (e.g. `INVALID_PASSWORD`):
+
+```typescript
+interface IAuthClient {
+    signInWithPassword(request: { email: string; password: string; returnSecureToken: boolean }): Promise<SignInWithPasswordResponse>;
+    signInWithCustomToken(request: { token: string; returnSecureToken: true }): Promise<SignInWithCustomTokenResponse>;
+    resetPassword(request: { oobCode: string; newPassword?: string }): Promise<ResetPasswordResponse>; // reads a code without newPassword
+    applyActionCode(request: { oobCode: string }): Promise<UpdateAccountResponse>; // accounts:update with an oobCode
+}
+```
+
 ## Stub Features
 
 ### StubFirestoreDatabase
@@ -166,6 +206,17 @@ In-memory Firebase Storage:
 - File listing (`getFiles()`, `getAllFiles()`, `getFile()`)
 - Test utilities (`seedFile()`, `clear()`)
 
+### StubAuth
+
+In-memory Firebase Auth for one project, behaving as the Auth emulator does:
+- User management, with Firebase's errors (`auth/user-not-found`, `auth/email-already-exists`, ...) and limits
+- ID tokens, custom tokens and session cookies as signed JWTs that only the same `StubAuth` verifies; expiry and revocation
+- `client()`: an `IAuthClient` over the same users, for password and custom-token sign-in and action codes
+- Action codes (password reset, email verification, email change), each usable once
+- Test utilities (`seedUser()`, `issueIdToken()`, `issueActionCode()`, `advanceClock()`, `failNext()`, `remainingFailures()`, `clear()`)
+
+Not simulated: input validation (malformed email, short password at creation), custom claims, action code expiry, `actionCodeSettings`, rate limiting, and email enumeration protection (real projects answer both a wrong password and an unknown email with `INVALID_LOGIN_CREDENTIALS`; the emulator and the stub do not).
+
 ## Production Wrappers
 
 Wrap real Firebase instances to use the interfaces:
@@ -173,8 +224,9 @@ Wrap real Firebase instances to use the interfaces:
 ```typescript
 import { getFirestore } from 'firebase-admin/firestore';
 import { getStorage } from 'firebase-admin/storage';
+import { getAuth } from 'firebase-admin/auth';
 import { CloudTasksClient } from '@google-cloud/tasks';
-import { createFirestoreDatabase, createCloudTasksClient, createStorage } from 'ts-firebase-simulator';
+import { createFirestoreDatabase, createCloudTasksClient, createStorage, createAuth, createAuthClient } from 'ts-firebase-simulator';
 
 // Firestore
 const db: IFirestoreDatabase = createFirestoreDatabase(getFirestore());
@@ -184,6 +236,10 @@ const tasks: ICloudTasksClient = createCloudTasksClient(); // Uses real CloudTas
 
 // Storage
 const storage: IStorage = createStorage(getStorage());
+
+// Auth
+const auth: IAuth = createAuth(getAuth());
+const authClient: IAuthClient = createAuthClient({ apiKey: process.env.FIREBASE_API_KEY!, baseUrl: 'https://identitytoolkit.googleapis.com' });
 ```
 
 ## Testing Firestore Triggers

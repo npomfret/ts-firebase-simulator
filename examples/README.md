@@ -36,6 +36,12 @@ npx tsx examples/<filename>.ts
 | `storage-basic.ts` | Upload, download, delete files |
 | `storage-seed-files.ts` | Seeding files for tests |
 
+## Auth
+
+| File | Description |
+|------|-------------|
+| `auth-basic.ts` | Users, sign-in, action codes and token expiry |
+
 ## Cloud Tasks
 
 | File | Description |

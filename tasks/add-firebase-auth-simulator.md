@@ -1,6 +1,6 @@
 # Add a Firebase Auth simulator
 
-**Status:** Phases 1 (users), 2 (tokens), 3 (client sign-in) and 4 (action codes) done; phase 5 to do.
+**Status:** All five phases done. Publishing a minor version is the user's step.
 
 ## The issue
 
@@ -320,9 +320,20 @@ test:with-emulator` and `npm run format:check` passing.
    supported; the stub's links have Firebase's hosted-action form
    (`https://<project>.firebaseapp.com/__/auth/action?...`) without an `apiKey`,
    while the emulator's point at itself.
-5. **Docs.** `examples/auth-basic.ts`, README section, CONTRIBUTING (Auth emulator;
-   Auth has no real-Firebase mode, as Cloud Tasks has no emulator). Record here
-   the coverage reached and any limitation found.
+5. [x] **Docs.** `examples/auth-basic.ts` (seed, password sign-in, a refusal,
+   email verification by action code, token expiry, `clear`), listed in
+   `examples/README.md`; README: `IAuth`, `IAuthClient`, `StubAuth` features and
+   what is not simulated, `createAuth`/`createAuthClient` among the production
+   wrappers; CONTRIBUTING: the Auth emulator (port 9099), and why Auth has no
+   real-Firebase mode. Verified: `npx tsx examples/auth-basic.ts` runs,
+   `npm run build`, `npm run test:unit` (121 passed), `npm run test:with-emulator`
+   (119 passed, Auth on stub and emulator), `npm run format:check`.
+
+   Coverage reached: every Admin SDK and REST call the consumer uses, and all its
+   test controls but `markUserAsDeleted` (dropped, no callers). Residual risk: the
+   limitations under each phase; the largest for the consumer are no
+   `EXPIRED_OOB_CODE`, no `USER_DISABLED` on action codes, and no email
+   enumeration protection, none of which the stub can produce.
 
 Publishing the new version is the user's step; the consumer's migration then
 proceeds under its own task.
