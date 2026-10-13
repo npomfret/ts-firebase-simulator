@@ -7,3 +7,4 @@ service-account-key.json
 test-reports/
 .gitnexus/
 .codex/config.toml
+tmp/
