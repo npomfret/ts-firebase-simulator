@@ -55,3 +55,23 @@ This is not licence to stop early, and scope discipline is not an excuse for lea
 - Report what was done and what was verified. Do not report intentions, or work you decided against.
 
 *Generated from `npomfret/agent-standards`. Edit the standard there, not this copy.*
+
+## Running commands
+
+How you run commands, and what you ask the user to run. Writing a script that stays in the project is the `scripting` skill's subject; load it before writing one.
+
+### Never hand the user a long command
+
+- Run commands yourself. Ask the user to run something only when it needs them: a login, a password, `sudo`, a device in their hand, an install.
+- Never ask the user to type or paste a long command: anything over one line, any chain of `&&`, `;` or `|`, a heredoc, or more than about 80 characters.
+- Write it instead to a new executable script in the project's `tmp/` folder, named for what it does (`tmp/install-shellcheck.sh`). Give it `#!/usr/bin/env bash`, `set -euo pipefail` and a comment saying what it does and why. Have it log its detail to a file under `tmp/logs/` and print that path.
+- Show the user the script, then ask them to run it with `! tmp/<name>.sh`, so its output lands in the conversation. Read its log afterwards rather than asking what happened.
+- One short command, such as `! brew install shfmt`, is given as it is.
+
+### Keep verbose output out of the console
+
+- A command whose output may run past a screen, such as a build, a test suite, an install or a data run, writes to a log file under `tmp/logs/` and you read the parts you need with `tail`, `grep` or a line range. Never let thousands of lines into the conversation.
+- Never add a verbose or debug flag just to watch. Read the log file.
+- When reporting a run, quote the lines that matter and give the log path. Never paste the log.
+
+*Generated from `npomfret/agent-standards`. Edit the standard there, not this copy.*
