@@ -2,15 +2,15 @@
 # Syntax: Starlark. decision precedence: forbidden > prompt > allow.
 # Loads only when this project is trusted.
 
-# ---- git: everything except merge / push ----
+# ---- git: everything except merge ----
 prefix_rule(
-    pattern = ["git", ["merge", "push"]],
+    pattern = ["git", "merge"],
     decision = "forbidden",
-    justification = "Merging and pushing (all remote write operations) are reserved for the human.",
+    justification = "Merging is reserved for the human.",
 )
 
 # Global git flags sit between "git" and the subcommand, so exact-prefix
-# matching would miss e.g. `git -C . push`. Route those through a prompt. -P and
+# matching would miss e.g. `git -C . merge`. Route those through a prompt. -P and
 # --no-pager only choose how output is printed, conceal nothing, and were the two
 # that came up in ordinary work, so they are no longer listed.
 prefix_rule(
