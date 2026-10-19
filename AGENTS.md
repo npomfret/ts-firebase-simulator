@@ -75,3 +75,33 @@ How you run commands, and what you ask the user to run. Writing a script that st
 - When reporting a run, quote the lines that matter and give the log path. Never paste the log.
 
 *Generated from `npomfret/agent-standards`. Edit the standard there, not this copy.*
+
+## State and dependencies
+
+Everything code depends on is created once, at the program's entry point, and handed to whatever needs it, normally as a constructor parameter. Nothing reaches out to a global for it. This rule has no exceptions.
+
+### No static state
+
+- Never hold state at module, class or global level: no exported instance (`export const store = new Store()`), no module-level `let` or `var`, no mutable static field, no singleton accessor (`getInstance()`, `getLogger()`, `getRuntimeSecrets()`), no module-level cache or memo, no shared client created lazily on first use.
+- This covers anything with identity or a lifecycle: stores, API and database clients, connections, pools, loggers, caches, config, secrets, feature flags, registries, event buses.
+- A true constant is not state: a frozen literal, a regular expression, a lookup table nothing writes to. If anything can write to it, or it holds a resource, it is state.
+- Tests follow the same rule. Each test, or its setup, builds what it uses; no instance is shared between tests through a module.
+
+### Pass dependencies in
+
+- A class takes what it uses as constructor parameters. A function takes it as an argument. Neither imports an instance.
+- Each program has one composition root: `main`, the server bootstrap, the app's root component, a test's setup. It creates the instances and wires them together. A framework's scoped mechanism, such as a context provider or a DI container, is fine when the root creates it and passes it down.
+- Never default a parameter to a global (`constructor(api = apiClient)`). That is the global again.
+
+### Environment variables
+
+- Only the composition root reads the process environment (`process.env`, `os.environ`, `ProcessInfo.processInfo.environment` and the like) and the command-line arguments. It reads them once, validates them into a typed config object, and passes that object, or the values in it, to what needs them.
+- No other code reads an environment variable, including through a helper that wraps the read.
+
+### Existing code is not a precedent
+
+- Where a project already has static state or reads the environment deep in its code, do not copy it, extend it or add to it, however much of it there is. New code takes its dependencies as parameters even when the code around it imports globals.
+- Removing existing static state is a change of its own. Do it when asked; otherwise name it in one line at the end of the report.
+- If a change cannot be made without new static state, for instance because there is no composition root to create the new object in, stop and say so. Never add the global as a stopgap.
+
+*Generated from `npomfret/agent-standards`. Edit the standard there, not this copy.*
