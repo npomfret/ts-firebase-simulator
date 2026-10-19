@@ -98,8 +98,8 @@ Code never obtains its dependencies from singletons, mutable static state, globa
 
 ### Environment variables and configuration
 
-- Environment variables are global state, not a configuration API. Never add a new environment variable or `.env` file by default; prefer explicit startup input such as a config file the entry point is given.
-- Where deployment requires environment variables, only the entry point reads them, once. It validates them into an immutable typed config object and passes that object, or the values in it, inward.
+- Environment variables and `.env` files are allowed as input. They are never read statically: no `process.env`, `os.environ` or `.env` lookup anywhere but the entry point.
+- The entry point reads them once, as the program starts, validates them into an immutable typed config object, and passes that object, or the values in it, to the code that depends on them.
 - No other code reads the environment, the command-line arguments or a config file it finds for itself.
 
 ### Tests
