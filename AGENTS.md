@@ -78,12 +78,13 @@ How you run commands, and what you ask the user to run. Writing a script that st
 
 ## State and dependencies
 
-Code never obtains its dependencies from singletons, mutable static state, globals or the environment. At startup, one composition root validates the configuration, constructs every dependency, and passes each consumer exactly what it needs, normally through required constructor parameters. This rule has no exceptions, and passing tests do not excuse a breach.
+Static application state is not allowed. Code never obtains its dependencies or configuration from singletons, globals, static accessors or the environment. At startup, one composition root validates the configuration, constructs every dependency, and passes each consumer exactly what it needs, normally through required constructor parameters. This rule has no exceptions, and passing tests do not excuse a breach.
 
 ### Forbidden
 
 - An exported, preconstructed instance (`export const store = new Store()`), a lazy `getInstance()`, a global accessor (`getLogger()`, `getRuntimeSecrets()`), or a global `configure()`/`reset()` lifecycle. Wrapping global access in a helper does not make the dependency explicit.
 - Mutable state in module variables (`let`, `var`), static properties, shared instances or global caches.
+- Configuration or a service instance exposed through a static field, a global object or a module-level export, even when it is immutable.
 - Obtaining a collaborator from a service locator, registry, application delegate or other global.
 - Passing a general container or a bag of dependencies inward. Each consumer receives the specific things it uses.
 - A constructor default that creates a production dependency (`constructor(api = apiClient)` or `= new HttpClient()`), property injection after construction, or hidden initialisation. A constructed object is ready to use.
@@ -94,18 +95,31 @@ Code never obtains its dependencies from singletons, mutable static state, globa
 - The composition root (`main`, the server bootstrap, the app's root component) builds dependencies before their consumers. Manual wiring is enough; a DI framework is not needed.
 - External capabilities are injected as narrow, application-owned interfaces: network, database, filesystem, time, randomness, IDs, scheduling, notifications, analytics, configuration. Platform global state that cannot be avoided sits behind an injected adapter.
 - One instance owned by the runtime may be passed to several consumers. That is shared ownership with a defined lifetime, not a singleton. Something that must be created later from request or session data comes from a narrow factory injected at startup.
-- Immutable constants, stateless functions and cheap, deterministic, side-effect-free value construction are allowed.
+- Immutable constants, stateless functions and cheap, deterministic, side-effect-free value construction are allowed. Configuration and service instances are not constants, however immutable.
 
 ### Environment variables and configuration
 
-- Environment variables and `.env` files are allowed as input. They are never read statically: no `process.env`, `os.environ` or `.env` lookup anywhere but the entry point.
-- The entry point reads them once, as the program starts, validates them into an immutable typed config object, and passes that object, or the values in it, to the code that depends on them.
-- No other code reads the environment, the command-line arguments or a config file it finds for itself.
+- Environment variables, `.env` files and equivalent configuration sources are allowed. The source is supplied explicitly to the program's entry point, which reads and validates it immediately at startup into typed, immutable configuration objects.
+- Those objects are passed to the code that depends on them, normally through required constructor parameters. Each consumer gets the settings it needs, not the whole application config.
+- Configuration is never accessed statically. Never load a `.env` file into global state for consumers to read later, and never read `process.env`, `os.environ`, a dotenv load or a discovered config file in behaviour code or at module import time.
+- Tests construct configuration in memory. They never edit environment variables or depend on a developer's `.env`.
+
+### Immutable by default
+
+- Make fields immutable wherever possible: set them during construction and use `readonly`, `final`, `let` or the language's equivalent. Injected collaborators and configuration never change for the life of the instance.
+- Prefer immutable values, and return a new value when data changes.
+- A non-reassignable reference does not make what it points to immutable. Protect owned data from mutation through aliases, constructor inputs, returned collections and nested objects, with immutable representations, defensive copies or read-only views as the contract needs. A read-only view does not stop another holder of the underlying object from changing it.
+- Mutable state needs a concrete behavioural reason. Keep it minimal and private, with one owner and a defined lifetime; derive values rather than store state that can drift.
+- Change it only through intent-based operations that preserve its invariants, never public fields or general setters. Keep multi-field updates consistent through failure, cancellation and partial completion, and never expose an intermediate invalid state.
+- Control concurrent and asynchronous access. Recheck invariants across suspension points, and never let stale work overwrite newer state.
+- Never add mutability for convenient wiring, later initialisation, test setup, or a cache without a stated need and invalidation policy. For every mutable field, be able to say why it must change, who may change it and how validity is kept.
+- None of this relaxes the ban on static application state.
 
 ### Tests
 
 - A test constructs the unit directly with in-memory configuration and fakes, and calls it without booting the application.
 - Two instances with different configuration and fakes must coexist in one process without interfering.
+- Mutable state is tested through its meaningful transitions, failure paths and concurrency risks, observed through behaviour, with independent instances per test.
 - Tests never patch modules, reset singletons, call static setters or change the environment to supply dependencies. If a test needs to, fix the production construction instead of adding test machinery.
 
 ### Existing code is not a precedent
