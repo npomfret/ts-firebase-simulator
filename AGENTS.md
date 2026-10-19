@@ -150,3 +150,17 @@ The application must be fast, and the tests are where slowness shows. Every test
 - When something is unexpectedly slow, investigate the slowness. Raising the timeout is not a fix.
 
 *Generated from `npomfret/agent-standards`. Edit the standard there, not this copy.*
+
+## Review before commit
+
+After any significant piece of work, and before committing it, have it reviewed by an agent. A passing build and green tests are not a review.
+
+- Significant means anything beyond a trivial edit: new or changed behaviour, a refactor, a new type, boundary or dependency, or a change to tests, configuration or tooling. A typo, a formatting-only change or a task-file edit needs no review.
+- Spawn the project's own reviewer agent where it has one that fits the change, or several in parallel where the change spans them. Otherwise spawn a general agent as the reviewer.
+- Hand the reviewer the success criteria, the revision range or file list, and the diff itself. Never send it just a name to go and find.
+- Tell it to skip the minor and the trivial, such as style, naming preferences and nits, and to report only real problems: bugs, broken contracts, missed requirements, breaches of the project's rules, and tests that prove nothing.
+- Fix every real finding, or say why it is wrong, before committing. Never commit with a finding unanswered.
+- In the report, say that the review ran, what it found and what was done about each finding.
+- This adds to any approval the project requires from the user. It never replaces one.
+
+*Generated from `npomfret/agent-standards`. Edit the standard there, not this copy.*
