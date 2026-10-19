@@ -78,25 +78,35 @@ How you run commands, and what you ask the user to run. Writing a script that st
 
 ## State and dependencies
 
-Everything code depends on is created once, at the program's entry point, and handed to whatever needs it, normally as a constructor parameter. Nothing reaches out to a global for it. This rule has no exceptions.
+Code never obtains its dependencies from singletons, mutable static state, globals or the environment. At startup, one composition root validates the configuration, constructs every dependency, and passes each consumer exactly what it needs, normally through required constructor parameters. This rule has no exceptions, and passing tests do not excuse a breach.
 
-### No static state
+### Forbidden
 
-- Never hold state at module, class or global level: no exported instance (`export const store = new Store()`), no module-level `let` or `var`, no mutable static field, no singleton accessor (`getInstance()`, `getLogger()`, `getRuntimeSecrets()`), no module-level cache or memo, no shared client created lazily on first use.
-- This covers anything with identity or a lifecycle: stores, API and database clients, connections, pools, loggers, caches, config, secrets, feature flags, registries, event buses.
-- A true constant is not state: a frozen literal, a regular expression, a lookup table nothing writes to. If anything can write to it, or it holds a resource, it is state.
-- Tests follow the same rule. Each test, or its setup, builds what it uses; no instance is shared between tests through a module.
+- An exported, preconstructed instance (`export const store = new Store()`), a lazy `getInstance()`, a global accessor (`getLogger()`, `getRuntimeSecrets()`), or a global `configure()`/`reset()` lifecycle. Wrapping global access in a helper does not make the dependency explicit.
+- Mutable state in module variables (`let`, `var`), static properties, shared instances or global caches.
+- Obtaining a collaborator from a service locator, registry, application delegate or other global.
+- Passing a general container or a bag of dependencies inward. Each consumer receives the specific things it uses.
+- A constructor default that creates a production dependency (`constructor(api = apiClient)` or `= new HttpClient()`), property injection after construction, or hidden initialisation. A constructed object is ready to use.
 
-### Pass dependencies in
+### Required
 
-- A class takes what it uses as constructor parameters. A function takes it as an argument. Neither imports an instance.
-- Each program has one composition root: `main`, the server bootstrap, the app's root component, a test's setup. It creates the instances and wires them together. A framework's scoped mechanism, such as a context provider or a DI container, is fine when the root creates it and passes it down.
-- Never default a parameter to a global (`constructor(api = apiClient)`). That is the global again.
+- Classes take their collaborators as required constructor parameters and keep them on the instance. Functions take them as explicit parameters. Per-call data goes in method arguments.
+- The composition root (`main`, the server bootstrap, the app's root component) builds dependencies before their consumers. Manual wiring is enough; a DI framework is not needed.
+- External capabilities are injected as narrow, application-owned interfaces: network, database, filesystem, time, randomness, IDs, scheduling, notifications, analytics, configuration. Platform global state that cannot be avoided sits behind an injected adapter.
+- One instance owned by the runtime may be passed to several consumers. That is shared ownership with a defined lifetime, not a singleton. Something that must be created later from request or session data comes from a narrow factory injected at startup.
+- Immutable constants, stateless functions and cheap, deterministic, side-effect-free value construction are allowed.
 
-### Environment variables
+### Environment variables and configuration
 
-- Only the composition root reads the process environment (`process.env`, `os.environ`, `ProcessInfo.processInfo.environment` and the like) and the command-line arguments. It reads them once, validates them into a typed config object, and passes that object, or the values in it, to what needs them.
-- No other code reads an environment variable, including through a helper that wraps the read.
+- Environment variables are global state, not a configuration API. Never add a new environment variable or `.env` file by default; prefer explicit startup input such as a config file the entry point is given.
+- Where deployment requires environment variables, only the entry point reads them, once. It validates them into an immutable typed config object and passes that object, or the values in it, inward.
+- No other code reads the environment, the command-line arguments or a config file it finds for itself.
+
+### Tests
+
+- A test constructs the unit directly with in-memory configuration and fakes, and calls it without booting the application.
+- Two instances with different configuration and fakes must coexist in one process without interfering.
+- Tests never patch modules, reset singletons, call static setters or change the environment to supply dependencies. If a test needs to, fix the production construction instead of adding test machinery.
 
 ### Existing code is not a precedent
 
