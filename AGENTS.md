@@ -129,3 +129,24 @@ Static application state is not allowed. Code never obtains its dependencies or 
 - If a change cannot be made without new static state, for instance because there is no composition root to create the new object in, stop and say so. Never add the global as a stopgap.
 
 *Generated from `npomfret/agent-standards`. Edit the standard there, not this copy.*
+
+## Test timeouts
+
+The application must be fast, and the tests are where slowness shows. Every test timeout and every asynchronous wait is short, so a slow response fails a test instead of hiding inside a generous limit.
+
+### Short by default
+
+- Set the limits explicitly: for each test case, its setup and teardown, drivers and page objects, and every framework wait (`waitFor`, `waitForExistence`, `expect.poll`, `.timeLimit` and the like). Never inherit a framework's generous default, and never allow an unlimited wait.
+- Unit tests are very fast. Each project sets a short budget per test type; as a guide, an in-memory unit test needs well under a second.
+- A wait in an integration, UI or end-to-end test is tied to how long a user would expect that response to take. Being an end-to-end test does not justify a long one.
+- Add outer limits too: per suite and per CI job, sized to the suite's real runtime, so a hang the test runner cannot interrupt still fails promptly.
+- A timeout fails the check and stops the stalled work. Its failure says which test or phase timed out, the elapsed time, the limit, and what state it observed.
+
+### Raising a limit needs the user
+
+- Never introduce a longer default, add a longer override, or increase an existing timeout without the user's explicit approval first.
+- When asking, name the specific operation, the evidence for how long it really takes, the limit you propose, and what that delay means for users.
+- An approved exception covers only that operation. Record it beside the limit, and never relax a shared default to accommodate it.
+- When something is unexpectedly slow, investigate the slowness. Raising the timeout is not a fix.
+
+*Generated from `npomfret/agent-standards`. Edit the standard there, not this copy.*
