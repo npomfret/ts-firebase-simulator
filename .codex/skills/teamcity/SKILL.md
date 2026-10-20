@@ -228,10 +228,12 @@ features {
 - **Each project owns its simulators.** Never share a device with another
   project, and pin the OS in the destination.
 - **Isolate DerivedData and temp output** under the build's temp dir.
-- **Serialise Xcode with a shared resource.** Use a `sharedResources` lock
-  named after the project (`funmax-xcode`). Take a write lock for compiles and a
-  read lock for UI legs on different simulators. A project's lock does not lock
-  the Mac.
+- **One simulator lock, server-wide.** Every leg that boots a simulator takes
+  `readLock("ios_simulator")`. That resource is defined once, on the server's
+  Root project, and its quota (2) caps how many simulator legs run at once
+  across every project. A write lock would take the whole quota. Never define it in a project, and never add a
+  per-project Xcode lock. A leg that boots no simulator, such as a compile, an
+  archive, `swift test`, a Mac-only leg or checks, takes no lock.
 - **Delivery builds the revision that passed.** `TestFlight Delivery` takes a
   snapshot dependency on `All Checks` and never commits, pulls or rebases.
   Submitting for App Review stays manual.
