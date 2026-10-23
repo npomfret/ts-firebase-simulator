@@ -149,6 +149,12 @@ The application must be fast, and the tests are where slowness shows. Every test
 - An approved exception covers only that operation. Record it beside the limit, and never relax a shared default to accommodate it.
 - When something is unexpectedly slow, investigate the slowness. Raising the timeout is not a fix.
 
+### Calibrate to measured time, in proportion
+
+- A shared CI server is busier than a developer's machine, and its load is not known in advance, so an operation can take several times longer there. Learning those timings and setting limits from them is normal work, not a failure.
+- Set a limit from the operation's measured time on the slowest place it runs, normally the CI agent, plus a proportionate margin. An action that takes 50 ms locally and 700 ms on a busy CI agent may get about a second. It never gets ten: a limit far beyond the measured worst case hides a stalled or broken operation and makes every failure, and the build, slow.
+- A raise for CI load is still a raise. It needs the user's approval, with the local and CI measurements as its evidence.
+
 *Generated from `npomfret/agent-standards`. Edit the standard there, not this copy.*
 
 ## Review before commit

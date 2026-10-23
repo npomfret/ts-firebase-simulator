@@ -58,6 +58,19 @@ The console is for a person watching. The record is the log file.
 - Errors go to stderr. A script never prints colour or cursor codes when its output is not a terminal.
 - A flag such as `--verbose` never moves the log onto the console. Read the log file instead.
 
+### When a step fails
+
+A failed build must say why it failed, from what the build server keeps. A script that runs other programs, such as a build, a test stage or a deploy, makes every failure explain itself.
+
+- Log each stage as it starts and ends, with its command, duration and exit status.
+- When a stage fails, the summary names the stage and the command, and says how it ended:
+  - it exited non-zero, with its exit status;
+  - the script's own time limit expired, with the limit and the elapsed time;
+  - something outside killed it, with the signal.
+- Those three are different failures. Never report them as one, and never as a bare "failed".
+- Keep the evidence with the failure: the program's error output, the end of its log, and the original error with its stack and cause. A summary never replaces them.
+- Never quieten a failing check to get past it. A warning treated as an error is fixed, not suppressed.
+
 ### Shell scripts
 
 - Every shell script starts with:
