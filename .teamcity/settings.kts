@@ -7,7 +7,7 @@ import jetbrains.buildServer.configs.kotlin.triggers.vcs
  * TeamCity settings for ts-firebase-simulator, on ci.snowmonkey.co.uk.
  *
  * All three agents (funmax-mac-1/2/3) are the same Mac -- macstudio -- and it
- * already carries what this project needs: Node 22, first on PATH via nvm.
+ * already carries what this project needs: Node 26, first on PATH via nvm.
  *
  * The integration suites run against the real Firebase project
  * fir-simulator-test, NOT against the emulators. The emulators want a JVM and
