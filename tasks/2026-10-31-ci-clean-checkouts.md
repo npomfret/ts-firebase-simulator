@@ -32,9 +32,30 @@ content-addressed download cache. `Integration` reads the service account key
 from its fixed path on the agent host and never writes it. No artifact
 dependencies exist.
 
-Temporary configurations `ProbeControl`, `ProbeCleanCheckout` and
-`ProbeBuildCleanup` produce the verification evidence and are removed once it
-is recorded.
+## Verification evidence
+
+Removal after the build, from `ProbeBuildCleanup` on `macstudio-2` at
+`ac13e975`, with `cleanCheckout` off and `expireHours=0`. Each run confirmed the
+exact revision and seeded the workspace; the next build on the agent then listed
+the workspaces without it, with no disk cleaner in that build's log.
+
+| Build | Ending | Finished | Directory gone by | Sentinel artifact |
+|---|---|---|---|---|
+| #1, 21247 | Success | 16:26:38 | 16:26:42 | Published |
+| #2, 21348 | Controlled failure, exit 1 | 16:44:18 | 16:44:22 | Published |
+| #3, 21440 | Execution timeout | 16:59:22 | 16:59:26 | Published |
+
+Disk pressure: the shared disk is under TeamCity's 3 GB requirement, and the
+agent's free-disk cleaner ran with 2.5 GB free in 21246 and 21440. It deletes
+workspaces, so `ProbeControl` #2 (21347) and `ProbeCleanCheckout` #2 and #3
+(21260, 21359) are not evidence: their directories were gone before they ran.
+
+Emptying before checkout is covered by the temporary chain `ProbeSeed`,
+`ProbeSeedSurvives`, `ProbeCleanCheckout`, removed once its evidence is recorded.
+A run counts only if the clean checkout starts within seconds of the green
+survival check on the same agent, with no `Free disk space` line in its log.
+Real legs: `BuildAndUnit` #137 (20842) and `Integration` #131 (20841) green at
+`ac13e975`.
 
 - [x] Inventory every CI build/leg and its checkout and output directories.
 - [ ] Apply clean checkout isolation and explicit cache/artifact handling.

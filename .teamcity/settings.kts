@@ -171,71 +171,57 @@ val integration = BuildType {
     onPushAndNightly(atMinute = 45)
 }
 
-// TEMPORARY, removed once the evidence is recorded. Each run confirms the exact revision, checks
-// every seed by path, because a clean `git status` cannot see inside .git, then seeds the workspace
-// again. The .git seed is what separates emptying the directory from `git clean` and a reset.
-// Pinned to one agent, or a later run could land on an agent that never saw the seed and prove
-// nothing, and so that the control runs alone there and can report the other workspaces.
-//   ProbeControl: nothing cleans, so every seed must survive. Without this the other two could
-//   pass only because nothing was ever left to find. Lists its sibling directories, which shows
-//   whether ProbeBuildCleanup's has gone without waiting for that probe's own next run.
-//   ProbeCleanCheckout: only the emptying before checkout acts, so a survivor shows it failed.
-//   ProbeBuildCleanup: only the removal after a build acts, so a survivor shows it failed. Run 2
-//   fails on purpose and run 3 is stopped by the execution timeout. The sentinel it publishes shows
-//   whether a build's evidence leaves before the directory goes, under the same default publishing
-//   mode as the real legs.
+// TEMPORARY, removed once the evidence is recorded. A chain in one directory, pinned to one agent:
+// ProbeSeed plants an untracked file, ignored output and a file inside .git, ProbeSeedSurvives
+// shows with no cleaning that every seed is there, and ProbeCleanCheckout shows that none reaches a
+// build once the directory is emptied. The agent's free-disk cleaner deletes workspaces when the
+// shared disk runs low, so a gap between runs proves nothing: a run counts only when the clean
+// checkout starts within seconds of the green survival check, with no cleaner in its log. A wrong
+// finding exits after seeding, not before, and the .git seed is what separates emptying from
+// `git clean` and a reset.
 fun workspaceProbe(
     probeId: String,
     probeName: String,
     clean: Boolean,
-    expireHours: String,
-    seedSurvives: Boolean,
-    endsBadly: Boolean,
+    expected: String,
+    after: BuildType?,
 ) = BuildType {
     id(probeId)
     name = probeName
     maxRunningBuilds = 1
-    artifactRules = "probe-sentinel.txt => evidence"
     vcs {
         root(DslContext.settingsRoot)
-        checkoutDir = "ts-firebase-simulator-" + probeId.lowercase()
+        checkoutDir = "ts-firebase-simulator-probe-chain"
         cleanCheckout = clean
     }
     params {
-        param("system.teamcity.build.checkoutDir.expireHours", expireHours)
+        param("system.teamcity.build.checkoutDir.expireHours", "1")
     }
     requirements {
         equals("teamcity.agent.name", "macstudio-2")
     }
-    val ending = if (endsBadly) {
-        "case %build.counter% in " +
-            "2) echo 'PROBE controlled failure'; exit 1 ;; " +
-            "3) echo 'PROBE waiting for the execution timeout'; sleep 150 ;; " +
-            "esac"
-    } else {
-        ""
+    if (after != null) {
+        dependencies {
+            snapshot(after) {
+                reuseBuilds = ReuseBuilds.NO
+            }
+        }
     }
     steps {
         script {
             name = "probe"
             scriptContent = """
                 set -eu
-                echo "PROBE run=%build.counter% agent=%teamcity.agent.name%"
+                echo "PROBE agent=%teamcity.agent.name% expected=$expected"
                 test "$(git rev-parse HEAD)" = "%build.vcs.number%"
                 echo "PROBE exact revision %build.vcs.number%"
-                echo "PROBE workspaces: $(ls -d ../ts-firebase-simulator-* | tr '\n' ' ')"
                 wrong=0
                 for f in .git/probe-sentinel probe-sentinel.txt dist/stale.js node_modules/.stale test-reports/unit.xml tmp/stale.log; do
                     if [ -e "${'$'}f" ]; then found=yes; else found=no; fi
                     echo "PROBE ${'$'}f found=${'$'}found"
-                    if [ %build.counter% -gt 1 ] && [ "$seedSurvives" = "true" ]; then
-                        if [ "${'$'}found" = "no" ]; then wrong=1; fi
-                    elif [ "${'$'}found" = "yes" ]; then
-                        wrong=1
-                    fi
+                    if [ "$expected" = "all" ] && [ "${'$'}found" = "no" ]; then wrong=1; fi
+                    if [ "$expected" = "none" ] && [ "${'$'}found" = "yes" ]; then wrong=1; fi
                 done
-                if [ "${'$'}wrong" = "1" ]; then echo "PROBE UNEXPECTED"; exit 3; fi
-                echo "PROBE as expected"
                 mkdir -p dist node_modules test-reports tmp
                 echo stale > .git/probe-sentinel
                 echo stale > probe-sentinel.txt
@@ -244,29 +230,36 @@ fun workspaceProbe(
                 echo '<testsuites/>' > test-reports/unit.xml
                 echo stale > tmp/stale.log
                 echo "PROBE seeded"
-                $ending
+                if [ "${'$'}wrong" = "1" ]; then echo "PROBE UNEXPECTED"; exit 3; fi
+                echo "PROBE as expected"
             """.trimIndent()
         }
     }
-    triggers {
-        schedule {
-            schedulingPolicy = cron {
-                seconds = "0"
-                minutes = "*/3"
-                hours = "*"
-                dayOfMonth = "*"
-                month = "*"
-                dayOfWeek = "?"
+    if (expected == "none") {
+        triggers {
+            schedule {
+                schedulingPolicy = cron {
+                    seconds = "0"
+                    minutes = "*/10"
+                    hours = "*"
+                    dayOfMonth = "*"
+                    month = "*"
+                    dayOfWeek = "?"
+                }
+                branchFilter = "+:<default>"
+                triggerBuild = always()
+                withPendingChangesOnly = false
             }
-            branchFilter = "+:<default>"
-            triggerBuild = always()
-            withPendingChangesOnly = false
         }
     }
     failureConditions {
         executionTimeoutMin = 1
     }
 }
+
+val probeSeed = workspaceProbe("ProbeSeed", "Probe: seed", false, "any", null)
+val probeSeedSurvives = workspaceProbe("ProbeSeedSurvives", "Probe: seed survives", false, "all", probeSeed)
+val probeCleanCheckout = workspaceProbe("ProbeCleanCheckout", "Probe: clean checkout", true, "none", probeSeedSurvives)
 
 project {
     description = "TypeScript-first in-memory Firebase stubs for unit testing."
@@ -283,7 +276,7 @@ project {
 
     buildType(buildAndUnit)
     buildType(integration)
-    buildType(workspaceProbe("ProbeControl", "Probe: control", false, "1", true, false))
-    buildType(workspaceProbe("ProbeCleanCheckout", "Probe: clean checkout", true, "1", false, false))
-    buildType(workspaceProbe("ProbeBuildCleanup", "Probe: build cleanup", false, "0", false, true))
+    buildType(probeSeed)
+    buildType(probeSeedSurvives)
+    buildType(probeCleanCheckout)
 }
