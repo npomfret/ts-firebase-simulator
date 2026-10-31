@@ -1,6 +1,6 @@
 # CI builds must start from a clean, empty checkout
 
-Project: `ts-firebase-simulator`. Requested by Nick on 31 October 2026. Status: open, real legs pending.
+Project: `ts-firebase-simulator`. Requested by Nick on 31 October 2026. Status: done.
 
 Ensure every CI build starts from an empty source directory before checking out
 the exact requested revision, unless a specific, justified exception is recorded.
@@ -64,13 +64,15 @@ line in its log.
 21659 logged `Full checkout enforced. Reason: ["Delete all files before the
 build" turned on]`. Every probe confirmed the exact revision.
 
-Real legs: `BuildAndUnit` #137 and `Integration` #131 ran in the old shared
-directory, queued before the settings applied, so they are not evidence.
-Pending: the first green build of each leg in its named directory.
+Real legs at `49e8d41f`: `BuildAndUnit` #139 (21711) and `Integration` #133
+(21710) are green in their named directories, with `Full checkout enforced` and
+their reports published. Earlier builds #137 and #131 ran in the old directory
+and are not evidence. A before-and-after `settings --json` diff shows only the
+two checkout directories, `cleanBuild` and `expireHours` changed.
 
 - [x] Inventory every CI build/leg and its checkout and output directories.
 - [x] Apply clean checkout isolation and explicit cache/artifact handling.
-- [ ] Verify freshness and cleanup serially; record build IDs and evidence.
+- [x] Verify freshness and cleanup serially; record build IDs and evidence.
 - [x] Record each justified exception with its build/path, reason, retained
   state and freshness/isolation controls, or record why no exception is needed.
 
