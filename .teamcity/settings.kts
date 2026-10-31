@@ -171,96 +171,6 @@ val integration = BuildType {
     onPushAndNightly(atMinute = 45)
 }
 
-// TEMPORARY, removed once the evidence is recorded. A chain in one directory, pinned to one agent:
-// ProbeSeed plants an untracked file, ignored output and a file inside .git, ProbeSeedSurvives
-// shows with no cleaning that every seed is there, and ProbeCleanCheckout shows that none reaches a
-// build once the directory is emptied. The agent's free-disk cleaner deletes workspaces when the
-// shared disk runs low, so a gap between runs proves nothing: a run counts only when the clean
-// checkout starts within seconds of the green survival check, with no cleaner in its log. A wrong
-// finding exits after seeding, not before, and the .git seed is what separates emptying from
-// `git clean` and a reset.
-fun workspaceProbe(
-    probeId: String,
-    probeName: String,
-    clean: Boolean,
-    expected: String,
-    after: BuildType?,
-) = BuildType {
-    id(probeId)
-    name = probeName
-    maxRunningBuilds = 1
-    vcs {
-        root(DslContext.settingsRoot)
-        checkoutDir = "ts-firebase-simulator-probe-chain"
-        cleanCheckout = clean
-    }
-    params {
-        param("system.teamcity.build.checkoutDir.expireHours", "1")
-    }
-    requirements {
-        equals("teamcity.agent.name", "macstudio-2")
-    }
-    if (after != null) {
-        dependencies {
-            snapshot(after) {
-                reuseBuilds = ReuseBuilds.NO
-            }
-        }
-    }
-    steps {
-        script {
-            name = "probe"
-            scriptContent = """
-                set -eu
-                echo "PROBE agent=%teamcity.agent.name% expected=$expected"
-                test "$(git rev-parse HEAD)" = "%build.vcs.number%"
-                echo "PROBE exact revision %build.vcs.number%"
-                wrong=0
-                for f in .git/probe-sentinel probe-sentinel.txt dist/stale.js node_modules/.stale test-reports/unit.xml tmp/stale.log; do
-                    if [ -e "${'$'}f" ]; then found=yes; else found=no; fi
-                    echo "PROBE ${'$'}f found=${'$'}found"
-                    if [ "$expected" = "all" ] && [ "${'$'}found" = "no" ]; then wrong=1; fi
-                    if [ "$expected" = "none" ] && [ "${'$'}found" = "yes" ]; then wrong=1; fi
-                done
-                mkdir -p dist node_modules test-reports tmp
-                echo stale > .git/probe-sentinel
-                echo stale > probe-sentinel.txt
-                echo stale > dist/stale.js
-                echo stale > node_modules/.stale
-                echo '<testsuites/>' > test-reports/unit.xml
-                echo stale > tmp/stale.log
-                echo "PROBE seeded"
-                if [ "${'$'}wrong" = "1" ]; then echo "PROBE UNEXPECTED"; exit 3; fi
-                echo "PROBE as expected"
-            """.trimIndent()
-        }
-    }
-    if (expected == "none") {
-        triggers {
-            schedule {
-                schedulingPolicy = cron {
-                    seconds = "0"
-                    minutes = "*/10"
-                    hours = "*"
-                    dayOfMonth = "*"
-                    month = "*"
-                    dayOfWeek = "?"
-                }
-                branchFilter = "+:<default>"
-                triggerBuild = always()
-                withPendingChangesOnly = false
-            }
-        }
-    }
-    failureConditions {
-        executionTimeoutMin = 1
-    }
-}
-
-val probeSeed = workspaceProbe("ProbeSeed", "Probe: seed", false, "any", null)
-val probeSeedSurvives = workspaceProbe("ProbeSeedSurvives", "Probe: seed survives", false, "all", probeSeed)
-val probeCleanCheckout = workspaceProbe("ProbeCleanCheckout", "Probe: clean checkout", true, "none", probeSeedSurvives)
-
 project {
     description = "TypeScript-first in-memory Firebase stubs for unit testing."
 
@@ -276,7 +186,4 @@ project {
 
     buildType(buildAndUnit)
     buildType(integration)
-    buildType(probeSeed)
-    buildType(probeSeedSurvives)
-    buildType(probeCleanCheckout)
 }

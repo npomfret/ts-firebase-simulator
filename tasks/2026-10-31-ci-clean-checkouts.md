@@ -1,6 +1,6 @@
 # CI builds must start from a clean, empty checkout
 
-Project: `ts-firebase-simulator`. Requested by Nick on 31 October 2026. Status: open.
+Project: `ts-firebase-simulator`. Requested by Nick on 31 October 2026. Status: open, real legs pending.
 
 Ensure every CI build starts from an empty source directory before checking out
 the exact requested revision, unless a specific, justified exception is recorded.
@@ -22,7 +22,7 @@ no paused builds and no build outside the two below. There is no
 `.github/workflows`, and no release or deployment job: `npm publish` is run by
 hand.
 
-| Build | Checkout before | Checkout configured, verification pending | Outputs |
+| Build | Checkout before | Checkout now | Outputs |
 |---|---|---|---|
 | `BuildAndUnit` | Agent-side, reused hash directory shared with `Integration`; cleaned only on a branch change | `ts-firebase-simulator-build-and-unit`, emptied before checkout, removed after the build | `dist/`, `node_modules/`, `test-reports/unit.xml` (published, parsed during the build) |
 | `Integration` | As `BuildAndUnit` | `ts-firebase-simulator-integration`, emptied before checkout, removed after the build | `node_modules/`, `test-reports/integration.xml` (published, parsed during the build) |
@@ -50,18 +50,34 @@ agent's free-disk cleaner ran with 2.5 GB free in 21246 and 21440. It deletes
 workspaces, so `ProbeControl` #2 (21347) and `ProbeCleanCheckout` #2 and #3
 (21260, 21359) are not evidence: their directories were gone before they ran.
 
-Emptying before checkout is covered by the temporary chain `ProbeSeed`,
-`ProbeSeedSurvives`, `ProbeCleanCheckout`, removed once its evidence is recorded.
-A run counts only if the clean checkout starts within seconds of the green
-survival check on the same agent, with no `Free disk space` line in its log.
-Real legs: `BuildAndUnit` #137 (20842) and `Integration` #131 (20841) green at
-`ac13e975`.
+Emptying before checkout, from a chain in one directory on `macstudio-2` at
+`89844ebf`, removed once recorded. A run counted only if the clean checkout
+started within seconds of the green survival check, with no `Free disk space`
+line in its log.
+
+| Build | Cleaning | Started | All six seeds |
+|---|---|---|---|
+| `ProbeSeed` #4, 21657 | None | 17:48:41 | Planted |
+| `ProbeSeedSurvives` #1, 21658 | None | 17:48:52 | Found, `.git/probe-sentinel` included |
+| `ProbeCleanCheckout` #4, 21659 | `cleanCheckout` | 17:49:04 | None found |
+
+21659 logged `Full checkout enforced. Reason: ["Delete all files before the
+build" turned on]`. Every probe confirmed the exact revision.
+
+Real legs: `BuildAndUnit` #137 and `Integration` #131 ran in the old shared
+directory, queued before the settings applied, so they are not evidence.
+Pending: the first green build of each leg in its named directory.
 
 - [x] Inventory every CI build/leg and its checkout and output directories.
-- [ ] Apply clean checkout isolation and explicit cache/artifact handling.
+- [x] Apply clean checkout isolation and explicit cache/artifact handling.
 - [ ] Verify freshness and cleanup serially; record build IDs and evidence.
-- [ ] Record each justified exception with its build/path, reason, retained
+- [x] Record each justified exception with its build/path, reason, retained
   state and freshness/isolation controls, or record why no exception is needed.
 
-Keep paused builds paused. Creating this task does not change CI settings,
-delete build data or claim the requirement is already satisfied.
+No exception is needed: neither leg reuses a directory, and the Git mirror and
+npm cache cannot supply a generated file or a test result. No build here is
+paused.
+
+Residual risk: the old shared `work/5a6779e0d80833b` directories stay on the
+agents until TeamCity expires them; no build uses them. The agents' shared disk
+is below 3 GB free, which belongs to the CI storage cleanup task.
