@@ -25,13 +25,23 @@ version = "2026.1"
 // and nothing to rotate in two places.
 val realFirebaseKey = "/Users/nickpomfret/projects/ts-firebase-simulator/service-account-key.json"
 
-fun BuildType.onTheMac() {
+// Each leg owns a directory by name, rather than the VCS-settings hash the two would otherwise
+// share. It is emptied before checkout, ignored files included, and removed once the build ends,
+// however it ends: a node_modules left by an earlier build is what used to fail `npm ci` with
+// ENOTEMPTY. Nothing in it is a cache. What outlives a build sits outside it: the agent's Git
+// mirror, from which checkout resolves one exact revision, and npm's download cache, which
+// `npm ci` checks against the lockfile's integrity hashes. Neither can supply a generated file or
+// a test result, so no build here needs an exception.
+fun BuildType.onTheMac(workspace: String) {
     maxRunningBuilds = 1
     params {
         param("env.TMPDIR", "%system.teamcity.build.tempDir%")
+        param("system.teamcity.build.checkoutDir.expireHours", "0")
     }
     vcs {
         root(DslContext.settingsRoot)
+        checkoutDir = workspace
+        cleanCheckout = true
     }
 }
 
@@ -81,7 +91,7 @@ val buildAndUnit = BuildType {
     name = "Build & Unit"
     description = "Format, typecheck, bundle and the in-memory unit suite. Talks to nothing " +
         "outside the checkout, so it cannot go red for a reason that is not ours."
-    onTheMac()
+    onTheMac("ts-firebase-simulator-build-and-unit")
     keepsWhatVitestSaid("unit.xml")
     steps {
         script {
@@ -120,7 +130,7 @@ val integration = BuildType {
         "Firestore and Storage, so a divergence between them fails here. Signed URLs are " +
         "covered on this leg and cannot be covered on the emulator one, which has no key " +
         "to sign with."
-    onTheMac()
+    onTheMac("ts-firebase-simulator-integration")
     keepsWhatVitestSaid("integration.xml")
     params {
         param("env.GOOGLE_APPLICATION_CREDENTIALS", realFirebaseKey)
@@ -161,6 +171,103 @@ val integration = BuildType {
     onPushAndNightly(atMinute = 45)
 }
 
+// TEMPORARY, removed once the evidence is recorded. Each run confirms the exact revision, checks
+// every seed by path, because a clean `git status` cannot see inside .git, then seeds the workspace
+// again. The .git seed is what separates emptying the directory from `git clean` and a reset.
+// Pinned to one agent, or a later run could land on an agent that never saw the seed and prove
+// nothing, and so that the control runs alone there and can report the other workspaces.
+//   ProbeControl: nothing cleans, so every seed must survive. Without this the other two could
+//   pass only because nothing was ever left to find. Lists its sibling directories, which shows
+//   whether ProbeBuildCleanup's has gone without waiting for that probe's own next run.
+//   ProbeCleanCheckout: only the emptying before checkout acts, so a survivor shows it failed.
+//   ProbeBuildCleanup: only the removal after a build acts, so a survivor shows it failed. Run 2
+//   fails on purpose and run 3 is stopped by the execution timeout. The sentinel it publishes shows
+//   whether a build's evidence leaves before the directory goes, under the same default publishing
+//   mode as the real legs.
+fun workspaceProbe(
+    probeId: String,
+    probeName: String,
+    clean: Boolean,
+    expireHours: String,
+    seedSurvives: Boolean,
+    endsBadly: Boolean,
+) = BuildType {
+    id(probeId)
+    name = probeName
+    maxRunningBuilds = 1
+    artifactRules = "probe-sentinel.txt => evidence"
+    vcs {
+        root(DslContext.settingsRoot)
+        checkoutDir = "ts-firebase-simulator-" + probeId.lowercase()
+        cleanCheckout = clean
+    }
+    params {
+        param("system.teamcity.build.checkoutDir.expireHours", expireHours)
+    }
+    requirements {
+        equals("teamcity.agent.name", "macstudio-2")
+    }
+    val ending = if (endsBadly) {
+        "case %build.counter% in " +
+            "2) echo 'PROBE controlled failure'; exit 1 ;; " +
+            "3) echo 'PROBE waiting for the execution timeout'; sleep 150 ;; " +
+            "esac"
+    } else {
+        ""
+    }
+    steps {
+        script {
+            name = "probe"
+            scriptContent = """
+                set -eu
+                echo "PROBE run=%build.counter% agent=%teamcity.agent.name%"
+                test "$(git rev-parse HEAD)" = "%build.vcs.number%"
+                echo "PROBE exact revision %build.vcs.number%"
+                echo "PROBE workspaces: $(ls -d ../ts-firebase-simulator-* | tr '\n' ' ')"
+                wrong=0
+                for f in .git/probe-sentinel probe-sentinel.txt dist/stale.js node_modules/.stale test-reports/unit.xml tmp/stale.log; do
+                    if [ -e "${'$'}f" ]; then found=yes; else found=no; fi
+                    echo "PROBE ${'$'}f found=${'$'}found"
+                    if [ %build.counter% -gt 1 ] && [ "$seedSurvives" = "true" ]; then
+                        if [ "${'$'}found" = "no" ]; then wrong=1; fi
+                    elif [ "${'$'}found" = "yes" ]; then
+                        wrong=1
+                    fi
+                done
+                if [ "${'$'}wrong" = "1" ]; then echo "PROBE UNEXPECTED"; exit 3; fi
+                echo "PROBE as expected"
+                mkdir -p dist node_modules test-reports tmp
+                echo stale > .git/probe-sentinel
+                echo stale > probe-sentinel.txt
+                echo stale > dist/stale.js
+                echo stale > node_modules/.stale
+                echo '<testsuites/>' > test-reports/unit.xml
+                echo stale > tmp/stale.log
+                echo "PROBE seeded"
+                $ending
+            """.trimIndent()
+        }
+    }
+    triggers {
+        schedule {
+            schedulingPolicy = cron {
+                seconds = "0"
+                minutes = "*/3"
+                hours = "*"
+                dayOfMonth = "*"
+                month = "*"
+                dayOfWeek = "?"
+            }
+            branchFilter = "+:<default>"
+            triggerBuild = always()
+            withPendingChangesOnly = false
+        }
+    }
+    failureConditions {
+        executionTimeoutMin = 1
+    }
+}
+
 project {
     description = "TypeScript-first in-memory Firebase stubs for unit testing."
 
@@ -176,4 +283,7 @@ project {
 
     buildType(buildAndUnit)
     buildType(integration)
+    buildType(workspaceProbe("ProbeControl", "Probe: control", false, "1", true, false))
+    buildType(workspaceProbe("ProbeCleanCheckout", "Probe: clean checkout", true, "1", false, false))
+    buildType(workspaceProbe("ProbeBuildCleanup", "Probe: build cleanup", false, "0", false, true))
 }
