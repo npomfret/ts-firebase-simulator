@@ -19,11 +19,11 @@ import jetbrains.buildServer.configs.kotlin.triggers.vcs
 
 version = "2026.1"
 
-// The service account already lives on the agent host, which is the same Mac
-// the checkout of this project sits on. Pointing at it in place means the key
-// is in neither git nor TeamCity's store -- there is no extra copy to leak,
-// and nothing to rotate in two places.
-val realFirebaseKey = "/Users/nickpomfret/projects/ts-firebase-simulator/service-account-key.json"
+// The CI account has its own copy of the service account key outside the
+// checkout, at the path below. The key is in neither git nor TeamCity's store.
+// Rotating the key means updating this CI copy as well as the developer's
+// own copy.
+val realFirebaseKey = "/Users/teamcity/.config/ts-firebase-simulator/service-account-key.json"
 
 // Each leg owns a directory by name, rather than the VCS-settings hash the two would otherwise
 // share. It is emptied before checkout, ignored files included, and removed once the build ends,
