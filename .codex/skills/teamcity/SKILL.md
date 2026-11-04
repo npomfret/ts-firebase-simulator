@@ -267,7 +267,7 @@ these steps, filled in:
 6. **Check the first build's log.** Zero
    `Failed to retrieve uploaded ssh key` lines, and the
    `report processed` line agreeing with the runner. A compile error is listed
-   in full by `GET /app/rest/projects/id:<id>/versionedSettings/status`.
+   in full by `python3 scripts/teamcity.py settings --sync-status`.
 
 After that, the project's `scripts/teamcity.py status` is how anyone checks a
 build.
