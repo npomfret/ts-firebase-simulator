@@ -15,19 +15,19 @@ import {
 class IdentityToolkitClient implements IAuthClient {
     constructor(private readonly config: AuthClientConfig) {}
 
-    signInWithPassword(request: { email: string; password: string; returnSecureToken: boolean; }): Promise<SignInWithPasswordResponse> {
+    signInWithPassword(request: { email: string; password: string; returnSecureToken: boolean; tenantId?: string; }): Promise<SignInWithPasswordResponse> {
         return this.post('signInWithPassword', request);
     }
 
-    signInWithCustomToken(request: { token: string; returnSecureToken: true; }): Promise<SignInWithCustomTokenResponse> {
+    signInWithCustomToken(request: { token: string; returnSecureToken: true; tenantId?: string; }): Promise<SignInWithCustomTokenResponse> {
         return this.post('signInWithCustomToken', request);
     }
 
-    resetPassword(request: { oobCode: string; newPassword?: string; }): Promise<ResetPasswordResponse> {
+    resetPassword(request: { oobCode: string; newPassword?: string; tenantId?: string; }): Promise<ResetPasswordResponse> {
         return this.post('resetPassword', request);
     }
 
-    applyActionCode(request: { oobCode: string; }): Promise<UpdateAccountResponse> {
+    applyActionCode(request: { oobCode: string; tenantId?: string; }): Promise<UpdateAccountResponse> {
         return this.post('update', request);
     }
 

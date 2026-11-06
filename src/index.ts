@@ -15,7 +15,7 @@ export type {
 } from './firestore-types';
 
 export { FieldPath, FieldValue, Filter, Timestamp } from 'firebase-admin/firestore';
-export { createAuth } from './admin-auth';
+export { createAuth, createTenantManager } from './admin-auth';
 export { createAuthClient } from './admin-auth-client';
 export { createCloudTasksClient } from './admin-cloudtasks';
 export { createFirestoreDatabase } from './admin-firestore';
@@ -30,10 +30,10 @@ export {
     type SignInWithPasswordResponse,
     type UpdateAccountResponse,
 } from './auth-client-types';
-export type { IAuth } from './auth-types';
+export type { IAuth, ITenantAwareAuth, ITenantManager } from './auth-types';
 export type { ICloudTasksClient } from './cloudtasks-types';
 export type { GetSignedUrlConfig, IStorage, IStorageBucket, IStorageFile, StorageFileContent, StorageFileMetadata, StorageSaveOptions } from './storage-types';
-export { type FailableAuthOperation, type SeedUser, StubAuth, StubAuthError, type StubAuthOptions } from './StubAuth';
+export { type FailableAuthOperation, type SeedUser, StubAuth, StubAuthError, type StubAuthOptions, StubTenantAwareAuth, StubTenantManager } from './StubAuth';
 export { type EnqueuedTask, StubCloudTasksClient } from './StubCloudTasksClient';
 export { type FirestoreTriggerChange, type FirestoreTriggerChangeHandler, type FirestoreTriggerEventType, type FirestoreTriggerHandlers, StubFirestoreDatabase } from './StubFirestoreDatabase';
 export { type SeedFileOptions, type StoredFileSnapshot, StubStorage, StubStorageBucket, StubStorageFile, type StubStorageOptions } from './StubStorage';

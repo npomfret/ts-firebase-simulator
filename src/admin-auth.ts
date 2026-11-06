@@ -1,11 +1,24 @@
-import type { Auth, CreateRequest, DecodedIdToken, GetUsersResult, ListUsersResult, SessionCookieOptions, UidIdentifier, UpdateRequest, UserRecord } from 'firebase-admin/auth';
-import type { IAuth } from './auth-types';
+import type {
+    Auth,
+    BaseAuth,
+    CreateRequest,
+    DecodedIdToken,
+    GetUsersResult,
+    ListUsersResult,
+    SessionCookieOptions,
+    TenantAwareAuth,
+    TenantManager,
+    UidIdentifier,
+    UpdateRequest,
+    UserRecord,
+} from 'firebase-admin/auth';
+import type { IAuth, ITenantAwareAuth, ITenantManager } from './auth-types';
 
 /**
- * Wraps the real Firebase Admin Auth client to match our interface
+ * Wraps the real Firebase Admin Auth client, project-level or tenant-aware, to match our interface
  */
 class AuthWrapper implements IAuth {
-    constructor(private readonly auth: Auth) {}
+    constructor(private readonly auth: BaseAuth) {}
 
     createUser(properties: CreateRequest): Promise<UserRecord> {
         return this.auth.createUser(properties);
@@ -73,4 +86,20 @@ class AuthWrapper implements IAuth {
  */
 export function createAuth(auth: Auth): IAuth {
     return new AuthWrapper(auth);
+}
+
+class TenantAwareAuthWrapper extends AuthWrapper implements ITenantAwareAuth {
+    readonly tenantId: string;
+
+    constructor(auth: TenantAwareAuth) {
+        super(auth);
+        this.tenantId = auth.tenantId;
+    }
+}
+
+/**
+ * Wrap a project's Firebase Admin `TenantManager`, e.g. `getAuth().tenantManager()`, to reach its tenants
+ */
+export function createTenantManager(tenantManager: TenantManager): ITenantManager {
+    return { authForTenant: (tenantId) => new TenantAwareAuthWrapper(tenantManager.authForTenant(tenantId)) };
 }

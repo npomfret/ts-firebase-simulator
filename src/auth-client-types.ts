@@ -1,16 +1,18 @@
 /**
  * Interface for the Firebase Auth REST API (Identity Toolkit) calls a server makes with a web API key
- * Request and response bodies as the REST API defines them, trimmed to the fields supported
+ * Request and response bodies as the REST API defines them, trimmed to the fields supported.
+ * Each request's optional `tenantId` names the Identity Platform tenant it acts in; without it, the
+ * request acts on the project's own users.
  */
 export interface IAuthClient {
-    /** `accounts:signInWithPassword` */
-    signInWithPassword(request: { email: string; password: string; returnSecureToken: boolean; }): Promise<SignInWithPasswordResponse>;
-    /** `accounts:signInWithCustomToken` */
-    signInWithCustomToken(request: { token: string; returnSecureToken: true; }): Promise<SignInWithCustomTokenResponse>;
+    /** `accounts:signInWithPassword`: the email is looked up in the tenant's users */
+    signInWithPassword(request: { email: string; password: string; returnSecureToken: boolean; tenantId?: string; }): Promise<SignInWithPasswordResponse>;
+    /** `accounts:signInWithCustomToken`: with a `tenantId`, a token not minted for that tenant fails with `TENANT_ID_MISMATCH` */
+    signInWithCustomToken(request: { token: string; returnSecureToken: true; tenantId?: string; }): Promise<SignInWithCustomTokenResponse>;
     /** `accounts:resetPassword`: without `newPassword` it reads a code of any type; with it, it uses a password-reset code */
-    resetPassword(request: { oobCode: string; newPassword?: string; }): Promise<ResetPasswordResponse>;
+    resetPassword(request: { oobCode: string; newPassword?: string; tenantId?: string; }): Promise<ResetPasswordResponse>;
     /** `accounts:update` with an `oobCode`: applies a VERIFY_EMAIL or VERIFY_AND_CHANGE_EMAIL code */
-    applyActionCode(request: { oobCode: string; }): Promise<UpdateAccountResponse>;
+    applyActionCode(request: { oobCode: string; tenantId?: string; }): Promise<UpdateAccountResponse>;
 }
 
 export interface SignInWithPasswordResponse {

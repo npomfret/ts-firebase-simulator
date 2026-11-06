@@ -162,18 +162,39 @@ interface IAuth {
 }
 ```
 
+### ITenantAwareAuth and ITenantManager
+
+Use instead of `TenantAwareAuth` and `TenantManager` for Identity Platform multi-tenancy. Each tenant is its own pool of accounts: the same email can be registered in several tenants, with separate passwords, action codes and revocation.
+
+```typescript
+interface ITenantAwareAuth extends IAuth {
+    readonly tenantId: string;
+}
+
+interface ITenantManager {
+    authForTenant(tenantId: string): ITenantAwareAuth; // auth/invalid-tenant-id for ''
+}
+```
+
+As in the Admin SDK:
+- A tenant's ID tokens and session cookies carry `firebase.tenant`, and its custom tokens `tenant_id`; its user records have `tenantId`.
+- A tenant's `verifyIdToken`, `verifySessionCookie` and `createSessionCookie` refuse a token of another tenant, or of the project itself, with `auth/mismatching-tenant-id`. With `checkRevoked` the user is looked up in the tenant first, so a uid it does not have fails with `auth/user-not-found` instead. Against the emulator the Admin SDK always looks the user up; the stub, like real Firebase, only with `checkRevoked`.
+- The project-level `IAuth` checks no tenant: it accepts a tenant's token, and with `checkRevoked` looks its uid up among the project's own users. Verify with the tenant's instance to enforce the tenant.
+
 ### IAuthClient
 
-The Firebase Auth REST API (Identity Toolkit) calls a server makes with a web API key, which the Admin SDK does not cover. An error response throws an `IdentityToolkitError` with Firebase's `status`, `message` and `reason` (e.g. `INVALID_PASSWORD`):
+The Firebase Auth REST API (Identity Toolkit) calls a server makes with a web API key, which the Admin SDK does not cover. An error response throws an `IdentityToolkitError` with Firebase's `status`, `message` and `reason` (e.g. `INVALID_PASSWORD`). Each request's optional `tenantId` selects the tenant it acts in; without it, it acts on the project's own users:
 
 ```typescript
 interface IAuthClient {
-    signInWithPassword(request: { email: string; password: string; returnSecureToken: boolean }): Promise<SignInWithPasswordResponse>;
-    signInWithCustomToken(request: { token: string; returnSecureToken: true }): Promise<SignInWithCustomTokenResponse>;
-    resetPassword(request: { oobCode: string; newPassword?: string }): Promise<ResetPasswordResponse>; // reads a code without newPassword
-    applyActionCode(request: { oobCode: string }): Promise<UpdateAccountResponse>; // accounts:update with an oobCode
+    signInWithPassword(request: { email: string; password: string; returnSecureToken: boolean; tenantId?: string }): Promise<SignInWithPasswordResponse>;
+    signInWithCustomToken(request: { token: string; returnSecureToken: true; tenantId?: string }): Promise<SignInWithCustomTokenResponse>;
+    resetPassword(request: { oobCode: string; newPassword?: string; tenantId?: string }): Promise<ResetPasswordResponse>; // reads a code without newPassword
+    applyActionCode(request: { oobCode: string; tenantId?: string }): Promise<UpdateAccountResponse>; // accounts:update with an oobCode
 }
 ```
+
+A custom token minted for one tenant, or for the project, is refused in another tenant's sign-in with `TENANT_ID_MISMATCH`. An action code works only in the pool it was issued in: elsewhere it is `INVALID_OOB_CODE`.
 
 ## Stub Features
 
@@ -211,11 +232,14 @@ In-memory Firebase Storage:
 In-memory Firebase Auth for one project, behaving as the Auth emulator does:
 - User management, with Firebase's errors (`auth/user-not-found`, `auth/email-already-exists`, ...) and limits
 - ID tokens, custom tokens and session cookies as signed JWTs that only the same `StubAuth` verifies; expiry and revocation
-- `client()`: an `IAuthClient` over the same users, for password and custom-token sign-in and action codes
+- `client()`: an `IAuthClient` over the same users and tenants, for password and custom-token sign-in and action codes
 - Action codes (password reset, email verification, email change), each usable once
-- Test utilities (`seedUser()`, `issueIdToken()`, `issueActionCode()`, `advanceClock()`, `failNext()`, `remainingFailures()`, `clear()`)
+- `tenantManager().authForTenant(id)`: a `StubTenantAwareAuth` over that tenant's own pool, sharing the `StubAuth`'s tokens and clock. As in the emulator, a tenant needs no creating: its pool starts empty on first use
+- Test utilities (`seedUser()`, `issueIdToken()`, `issueActionCode()`, `failNext()`, `remainingFailures()`, on `StubAuth` for the project's pool and on each `StubTenantAwareAuth` for its own; `advanceClock()` and `clear()` on `StubAuth`, for every pool)
 
-Not simulated: input validation (malformed email, short password at creation), custom claims, action code expiry, `actionCodeSettings`, rate limiting, and email enumeration protection (real projects answer both a wrong password and an unknown email with `INVALID_LOGIN_CREDENTIALS`; the emulator and the stub do not).
+Two `StubAuth` instances share nothing: neither accounts nor signing keys.
+
+Not simulated: input validation (malformed email, short password at creation), custom claims, action code expiry, `actionCodeSettings`, rate limiting, and email enumeration protection (real projects answer both a wrong password and an unknown email with `INVALID_LOGIN_CREDENTIALS`; the emulator and the stub do not). Tenants are not managed (no `createTenant` or tenant configuration), and an unknown tenant is not refused. The tenant behaviour is checked against the Admin SDK and the Auth emulator, not against a real multi-tenant project.
 
 ## Production Wrappers
 
@@ -226,7 +250,7 @@ import { getFirestore } from 'firebase-admin/firestore';
 import { getStorage } from 'firebase-admin/storage';
 import { getAuth } from 'firebase-admin/auth';
 import { CloudTasksClient } from '@google-cloud/tasks';
-import { createFirestoreDatabase, createCloudTasksClient, createStorage, createAuth, createAuthClient } from 'ts-firebase-simulator';
+import { createFirestoreDatabase, createCloudTasksClient, createStorage, createAuth, createAuthClient, createTenantManager } from 'ts-firebase-simulator';
 
 // Firestore
 const db: IFirestoreDatabase = createFirestoreDatabase(getFirestore());
@@ -240,6 +264,7 @@ const storage: IStorage = createStorage(getStorage());
 // Auth
 const auth: IAuth = createAuth(getAuth());
 const authClient: IAuthClient = createAuthClient({ apiKey: process.env.FIREBASE_API_KEY!, baseUrl: 'https://identitytoolkit.googleapis.com' });
+const tenantAuth: ITenantAwareAuth = createTenantManager(getAuth().tenantManager()).authForTenant(tenantId);
 ```
 
 ## Testing Firestore Triggers

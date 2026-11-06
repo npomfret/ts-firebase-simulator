@@ -25,3 +25,20 @@ export interface IAuth {
     generateEmailVerificationLink(email: string): Promise<string>;
     generateVerifyAndChangeEmailLink(email: string, newEmail: string): Promise<string>;
 }
+
+/**
+ * Interface for one Identity Platform tenant's Admin operations: `firebase-admin/auth` `TenantAwareAuth`.
+ * The operations act on the tenant's own users; its custom tokens carry the tenant ID, and verifying an
+ * ID token or session cookie of another tenant, or of the project itself, fails with `auth/mismatching-tenant-id`.
+ */
+export interface ITenantAwareAuth extends IAuth {
+    readonly tenantId: string;
+}
+
+/**
+ * Interface for reaching a project's tenants: the `authForTenant` part of `firebase-admin/auth` `TenantManager`
+ */
+export interface ITenantManager {
+    /** Throws `auth/invalid-tenant-id` for an empty tenant ID */
+    authForTenant(tenantId: string): ITenantAwareAuth;
+}

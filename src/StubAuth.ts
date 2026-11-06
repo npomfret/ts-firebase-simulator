@@ -10,7 +10,7 @@ import {
     type SignInWithPasswordResponse,
     type UpdateAccountResponse,
 } from './auth-client-types';
-import type { IAuth } from './auth-types';
+import type { IAuth, ITenantAwareAuth, ITenantManager } from './auth-types';
 
 /**
  * Error thrown by StubAuth, carrying the `code` and `message` the real Admin SDK's
@@ -71,6 +71,8 @@ const INVALID_SESSION_COOKIE_DURATION = ['auth/invalid-session-cookie-duration',
 const INVALID_ID_TOKEN = ['auth/invalid-id-token', 'The provided ID token is not a valid Firebase ID token.'] as const;
 const ID_TOKEN_EXPIRED = ['auth/id-token-expired', 'The provided Firebase ID token is expired.'] as const;
 const EMAIL_NOT_FOUND = ['auth/email-not-found', 'There is no user record corresponding to the provided email.'] as const;
+const INVALID_TENANT_ID = ['auth/invalid-tenant-id', 'The tenant ID must be a valid non-empty string.'] as const;
+const MISMATCHING_TENANT_ID = ['auth/mismatching-tenant-id', 'User tenant ID does not match with the current TenantAwareAuth tenant ID.'] as const;
 
 const INVALID_CUSTOM_TOKEN_FORMAT = 'INVALID_CUSTOM_TOKEN : Invalid assertion format';
 const MIN_PASSWORD_LENGTH = 6;
@@ -125,368 +127,177 @@ const SESSION_COOKIE: TokenKind = {
 };
 
 /** The claims of an ID token or session cookie, as its JWT payload carries them */
-type TokenClaims = Record<string, unknown> & { aud: string; iss: string; sub: string; auth_time: number; iat: number; exp: number; };
+type TokenClaims = Record<string, unknown> & { aud: string; iss: string; sub: string; auth_time: number; iat: number; exp: number; firebase?: { tenant?: unknown; [claim: string]: unknown; }; };
 
 /**
- * In-memory implementation of Firebase Auth for testing, matching the Auth emulator's behaviour.
- * Its tokens are JWTs signed with a key of its own, so only tokens it issued verify.
+ * One pool of accounts: the project's own, or one Identity Platform tenant's. Users, their
+ * emails, action codes and pending failures belong to a pool and are never seen by another.
  */
-export class StubAuth implements IAuth {
-    private readonly projectId: string;
-    private readonly users = new Map<string, StoredUser>();
-    private readonly failures = new Map<string, { remaining: number; error: Error; }>();
-    private readonly actionCodes = new Map<string, ActionCode>();
-    /** Signs the stub's tokens, standing in for Google's keys: only tokens this stub issued verify */
-    private readonly signingKey = randomBytes(32);
-    /** How far the stub's clock is ahead of the real one, by what `advanceClock` added */
-    private clockOffsetMs = 0;
-    private readonly authClient: IAuthClient = {
-        signInWithPassword: async (request) => this.signInWithPassword(request.email, request.password),
-        signInWithCustomToken: async (request) => this.signInWithCustomToken(request.token),
-        resetPassword: async (request) => this.resetPassword(request.oobCode, request.newPassword),
-        applyActionCode: async (request) => this.applyActionCode(request.oobCode),
-    };
+/** Not exported from the package */
+export class AuthPool {
+    readonly users = new Map<string, StoredUser>();
+    readonly actionCodes = new Map<string, ActionCode>();
+    readonly failures = new Map<string, { remaining: number; error: Error; }>();
 
-    constructor(options: StubAuthOptions = {}) {
-        this.projectId = options.projectId ?? 'test-project';
-    }
+    /** `undefined` for the project's own pool */
+    constructor(readonly tenantId: string | undefined) {}
 
-    /** The REST API client over this stub's users and tokens, as an app's admin and REST calls reach the same project */
-    client(): IAuthClient {
-        return this.authClient;
-    }
-
-    async createUser(properties: CreateRequest): Promise<UserRecord> {
-        const uid = properties.uid ?? generateUid();
-        if (this.users.has(uid)) {
-            throw new StubAuthError(...UID_ALREADY_EXISTS);
-        }
-        const user = this.newUser(uid, properties, this.nowMs());
-        this.assertEmailAvailable(user.email, uid);
-        this.users.set(uid, user);
-        return toUserRecord(user);
-    }
-
-    async getUser(uid: string): Promise<UserRecord> {
-        this.throwIfFailing('getUser', uid);
-        return toUserRecord(this.requireUser(uid));
-    }
-
-    getUsers(identifiers: UidIdentifier[]): Promise<GetUsersResult> {
-        // As the Admin SDK: too many identifiers throws at the call, before any promise
-        if (identifiers.length > MAX_GET_USERS_IDENTIFIERS) {
-            throw new StubAuthError('auth/maximum-user-count-exceeded', '`identifiers` parameter must have <= 100 entries.');
-        }
-        return this.lookUpUsers(identifiers);
-    }
-
-    private async lookUpUsers(identifiers: UidIdentifier[]): Promise<GetUsersResult> {
-        const users = new Map<string, UserRecord>();
-        const notFound: UidIdentifier[] = [];
-        for (const identifier of identifiers) {
-            const user = this.users.get(identifier.uid);
-            if (user) {
-                users.set(user.uid, toUserRecord(user));
-            } else {
-                notFound.push({ uid: identifier.uid });
-            }
-        }
-        return { users: [...users.values()], notFound };
-    }
-
-    async getUserByEmail(email: string): Promise<UserRecord> {
-        const user = this.findByEmail(email);
+    requireUser(uid: string): StoredUser {
+        const user = this.users.get(uid);
         if (!user) {
             throw new StubAuthError(...USER_NOT_FOUND);
         }
-        return toUserRecord(user);
+        return user;
     }
 
-    async updateUser(uid: string, properties: UpdateRequest): Promise<UserRecord> {
-        this.throwIfFailing('updateUser', uid);
-        const existing = this.requireUser(uid);
-        const email = properties.email === undefined ? existing.email : normalizeEmail(properties.email);
-        this.assertEmailAvailable(email, uid);
-
-        const nowMs = this.nowMs();
-        const passwordChanged = properties.password !== undefined;
-        const emailChanged = email !== existing.email;
-        const updated: StoredUser = {
-            ...existing,
-            email,
-            emailVerified: properties.emailVerified ?? existing.emailVerified,
-            displayName: properties.displayName === null ? undefined : (properties.displayName ?? existing.displayName),
-            photoURL: properties.photoURL === null ? undefined : (properties.photoURL ?? existing.photoURL),
-            phoneNumber: properties.phoneNumber === null ? undefined : (properties.phoneNumber ?? existing.phoneNumber),
-            disabled: properties.disabled ?? existing.disabled,
-            password: properties.password ?? existing.password,
-            // As the emulator: a new password refreshes the account, and a new password or email revokes earlier tokens
-            lastRefreshAtMs: passwordChanged ? nowMs : existing.lastRefreshAtMs,
-            validSinceSeconds: passwordChanged || emailChanged ? toSeconds(nowMs) : existing.validSinceSeconds,
-        };
-        this.users.set(uid, updated);
-        return toUserRecord(updated);
+    findByEmail(email: string): StoredUser | undefined {
+        const normalized = normalizeEmail(email);
+        return [...this.users.values()].find((user) => user.email === normalized);
     }
 
-    async listUsers(maxResults: number = MAX_LIST_USERS_RESULTS, pageToken?: string): Promise<ListUsersResult> {
-        if (!Number.isInteger(maxResults) || maxResults <= 0 || maxResults > MAX_LIST_USERS_RESULTS) {
-            throw new StubAuthError('auth/argument-error', 'Required "maxResults" must be a positive integer that does not exceed 1000.');
+    assertEmailAvailable(email: string | undefined, uid: string): void {
+        const owner = email === undefined ? undefined : this.findByEmail(email);
+        if (owner && owner.uid !== uid) {
+            throw new StubAuthError(...EMAIL_ALREADY_EXISTS);
         }
-        // As the emulator: users in uid order, and the page token is the uid the next page starts after
-        const page = [...this.users.values()]
-            .sort((a, b) => (a.uid < b.uid ? -1 : a.uid > b.uid ? 1 : 0))
-            .filter((user) => pageToken === undefined || user.uid > pageToken)
-            .slice(0, maxResults);
-        const result: ListUsersResult = { users: page.map(toUserRecord) };
-        if (page.length === maxResults) {
-            result.pageToken = page[page.length - 1].uid;
-        }
-        return result;
     }
 
-    async deleteUser(uid: string): Promise<void> {
-        this.requireUser(uid);
-        this.users.delete(uid);
-    }
-
-    async createCustomToken(uid: string, developerClaims?: object): Promise<string> {
-        // As Firebase: minted without looking the user up
-        const issuedAt = this.nowSeconds();
-        return this.mintJwt({
-            aud: CUSTOM_TOKEN_AUDIENCE,
-            iat: issuedAt,
-            exp: issuedAt + CUSTOM_TOKEN_LIFETIME_SECONDS,
-            iss: CUSTOM_TOKEN_SIGNER,
-            sub: CUSTOM_TOKEN_SIGNER,
-            uid,
-            ...(developerClaims === undefined ? {} : { claims: developerClaims }),
-        });
-    }
-
-    async verifyIdToken(idToken: string, checkRevoked = false): Promise<DecodedIdToken> {
-        return this.verifyToken(idToken, ID_TOKEN, checkRevoked);
-    }
-
-    async createSessionCookie(idToken: string, sessionCookieOptions: SessionCookieOptions): Promise<string> {
-        // As the Admin SDK: the duration is checked in whole seconds, rounded down
-        const expiresIn = sessionCookieOptions?.expiresIn;
-        const durationSeconds = typeof expiresIn === 'number' ? Math.floor(expiresIn / 1000) : NaN;
-        if (!(durationSeconds >= MIN_SESSION_COOKIE_SECONDS && durationSeconds <= MAX_SESSION_COOKIE_SECONDS)) {
-            throw new StubAuthError(...INVALID_SESSION_COOKIE_DURATION);
-        }
-        let claims: TokenClaims;
-        try {
-            claims = this.decodeToken(idToken, ID_TOKEN);
-        } catch {
-            throw new StubAuthError(...INVALID_ID_TOKEN);
-        }
-        const user = this.requireUser(claims.sub);
-        if (user.disabled) {
-            throw new StubAuthError(...USER_DISABLED);
-        }
-        // As Firebase: a revoked ID token is refused as expired
-        if (this.nowSeconds() >= claims.exp || isRevoked(user, claims)) {
-            throw new StubAuthError(...ID_TOKEN_EXPIRED);
-        }
-        // The cookie keeps the ID token's claims, auth_time included
-        const issuedAt = this.nowSeconds();
-        return this.mintJwt({ ...claims, iss: SESSION_COOKIE.issuerPrefix + this.projectId, iat: issuedAt, exp: issuedAt + durationSeconds });
-    }
-
-    async verifySessionCookie(sessionCookie: string, checkRevoked = false): Promise<DecodedIdToken> {
-        return this.verifyToken(sessionCookie, SESSION_COOKIE, checkRevoked);
-    }
-
-    /**
-     * As Firebase: tokens become valid from this second, so ID tokens and session cookies
-     * signed in before it are revoked, and any signed in during it survive
-     */
-    async revokeRefreshTokens(uid: string): Promise<void> {
-        const user = this.requireUser(uid);
-        this.users.set(uid, { ...user, validSinceSeconds: this.nowSeconds() });
-    }
-
-    async generatePasswordResetLink(email: string): Promise<string> {
-        return this.actionLink(this.issueActionCode(email, 'PASSWORD_RESET'), 'PASSWORD_RESET');
-    }
-
-    async generateEmailVerificationLink(email: string): Promise<string> {
-        return this.actionLink(this.issueActionCode(email, 'VERIFY_EMAIL'), 'VERIFY_EMAIL');
-    }
-
-    async generateVerifyAndChangeEmailLink(email: string, newEmail: string): Promise<string> {
-        return this.actionLink(this.issueActionCode(email, 'VERIFY_AND_CHANGE_EMAIL', newEmail), 'VERIFY_AND_CHANGE_EMAIL');
-    }
-
-    // Test controls
-
-    /**
-     * Writes a user straight into the stub, replacing any user with the same uid.
-     * An email that belongs to another user is refused, as `createUser` refuses it.
-     */
-    seedUser(user: SeedUser): UserRecord {
-        const stored = this.newUser(user.uid, user, user.creationTime?.getTime() ?? this.nowMs());
-        this.assertEmailAvailable(stored.email, user.uid);
-        this.users.set(user.uid, stored);
-        return toUserRecord(stored);
-    }
-
-    /** Makes the next `count` calls of `operation` for a user throw `error`, leaving the user unchanged. */
-    failNext(operation: FailableAuthOperation, uid: string, count: number, error: Error): void {
-        this.failures.set(failureKey(operation, uid), { remaining: count, error });
-    }
-
-    /** How many of the failures `failNext` set up for an operation and user are still to come. */
-    remainingFailures(operation: FailableAuthOperation, uid: string): number {
-        return this.failures.get(failureKey(operation, uid))?.remaining ?? 0;
-    }
-
-    /**
-     * Signs a user in as a custom-token sign-in would, and returns its ID token: a missing
-     * user is created, a disabled one refused, and the sign-in recorded in the user's metadata.
-     */
-    issueIdToken(uid: string): string {
-        return this.signIn(uid, 'custom', {});
-    }
-
-    /**
-     * Moves the stub's clock forward, for token expiry and revocation. Firebase compares a
-     * token's sign-in second with the second its user's tokens were revoked, so a test that
-     * revokes a token it has just issued advances the clock a second first.
-     */
-    advanceClock(ms: number): void {
-        this.clockOffsetMs += ms;
-    }
-
-    /**
-     * The oobCode the matching `generate*Link` would put in its link, refused as it refuses:
-     * an unknown email, and a new email that another user has.
-     */
-    issueActionCode(email: string, requestType: 'PASSWORD_RESET' | 'VERIFY_EMAIL'): string;
-    issueActionCode(email: string, requestType: 'VERIFY_AND_CHANGE_EMAIL', newEmail: string): string;
-    issueActionCode(email: string, requestType: ActionCodeRequestType, newEmail?: string): string {
-        const user = this.findByEmail(email);
-        if (!user) {
-            // As the Admin SDK: a password reset names the email, the other links the user
-            const [code, message] = requestType === 'PASSWORD_RESET' ? EMAIL_NOT_FOUND : USER_NOT_FOUND;
-            throw new StubAuthError(code, message);
-        }
-        const actionCode: ActionCode = { requestType, email: user.email! };
-        if (requestType === 'VERIFY_AND_CHANGE_EMAIL') {
-            if (this.findByEmail(newEmail!)) {
-                throw new StubAuthError(...EMAIL_ALREADY_EXISTS);
-            }
-            actionCode.newEmail = normalizeEmail(newEmail!);
-        }
-        const oobCode = randomBytes(40).toString('base64url');
-        this.actionCodes.set(oobCode, actionCode);
-        return oobCode;
-    }
-
-    /** Removes every user, action code and pending failure. */
     clear(): void {
         this.users.clear();
         this.actionCodes.clear();
         this.failures.clear();
     }
+}
 
-    private nowMs(): number {
+/**
+ * What one simulator instance shares between its pools: the project, the key that signs its
+ * tokens, its clock, and the pools themselves. The Identity Toolkit REST calls run here, since a
+ * request names its pool with `tenantId` rather than reaching it through an Admin instance.
+ */
+/** Not exported from the package */
+export class AuthAuthority {
+    readonly rootPool = new AuthPool(undefined);
+    /** As the emulator: a tenant's pool comes into being the first time the tenant is used */
+    private readonly tenantPools = new Map<string, AuthPool>();
+    /** Signs the stub's tokens, standing in for Google's keys: only tokens this simulator issued verify */
+    private readonly signingKey = randomBytes(32);
+    /** How far the clock is ahead of the real one, by what `advanceClock` added */
+    private clockOffsetMs = 0;
+
+    constructor(readonly projectId: string) {}
+
+    pool(tenantId: string | undefined): AuthPool {
+        // As the emulator: a request without a tenant ID (or with an empty one) reaches the project's own pool
+        if (!tenantId) {
+            return this.rootPool;
+        }
+        let pool = this.tenantPools.get(tenantId);
+        if (!pool) {
+            pool = new AuthPool(tenantId);
+            this.tenantPools.set(tenantId, pool);
+        }
+        return pool;
+    }
+
+    advanceClock(ms: number): void {
+        this.clockOffsetMs += ms;
+    }
+
+    clear(): void {
+        this.rootPool.clear();
+        for (const pool of this.tenantPools.values()) {
+            pool.clear();
+        }
+    }
+
+    nowMs(): number {
         return Date.now() + this.clockOffsetMs;
     }
 
-    private nowSeconds(): number {
+    nowSeconds(): number {
         return toSeconds(this.nowMs());
     }
 
     /** As the emulator: an unknown email, then a disabled user, then a wrong or absent password is refused */
-    private signInWithPassword(email: string, password: string): SignInWithPasswordResponse {
-        const user = this.findByEmail(email);
+    signInWithPassword(request: { email: string; password: string; tenantId?: string; }): SignInWithPasswordResponse {
+        const pool = this.pool(request.tenantId);
+        const user = pool.findByEmail(request.email);
         if (!user) {
             throw new IdentityToolkitError(400, 'EMAIL_NOT_FOUND');
         }
         if (user.disabled) {
             throw new IdentityToolkitError(400, 'USER_DISABLED');
         }
-        if (user.password === undefined || user.password !== password) {
+        if (user.password === undefined || user.password !== request.password) {
             throw new IdentityToolkitError(400, 'INVALID_PASSWORD');
         }
         // As the emulator: tokens are returned whatever returnSecureToken asks for
-        const idToken = this.signIn(user.uid, 'password', {});
+        const idToken = this.signIn(pool, user.uid, 'password', {});
         return { localId: user.uid, email: user.email!, idToken, refreshToken: newRefreshToken(), expiresIn: String(ID_TOKEN_LIFETIME_SECONDS) };
     }
 
-    private signInWithCustomToken(token: string): SignInWithCustomTokenResponse {
-        const { uid, claims } = this.decodeCustomToken(token);
-        if (this.users.get(uid)?.disabled) {
+    /**
+     * As the emulator: a request naming a tenant refuses a token not minted for that tenant
+     * before anything else is checked
+     */
+    signInWithCustomToken(request: { token: string; tenantId?: string; }): SignInWithCustomTokenResponse {
+        const pool = this.pool(request.tenantId);
+        if (pool.tenantId !== undefined) {
+            const parts = request.token.split('.');
+            const payload = parts.length === 3 ? decodeJwtPart(parts[1]) : undefined;
+            if (payload?.tenant_id !== pool.tenantId) {
+                throw new IdentityToolkitError(400, 'TENANT_ID_MISMATCH');
+            }
+        }
+        const { uid, claims } = this.decodeCustomToken(request.token);
+        if (pool.users.get(uid)?.disabled) {
             throw new IdentityToolkitError(400, 'USER_DISABLED');
         }
-        const idToken = this.signIn(uid, 'custom', claims);
+        const idToken = this.signIn(pool, uid, 'custom', claims);
         return { idToken, refreshToken: newRefreshToken(), expiresIn: String(ID_TOKEN_LIFETIME_SECONDS) };
     }
 
     /**
      * As the emulator: a code is used up once it gets past its type and password checks, and
-     * then acts on whichever user has the email it was issued for, if any does. A disabled user
-     * is not refused.
+     * then acts on whichever user of its pool has the email it was issued for, if any does. A
+     * disabled user is not refused.
      */
-    private resetPassword(oobCode: string, newPassword: string | undefined): ResetPasswordResponse {
-        const actionCode = this.requireActionCode(oobCode);
+    resetPassword(request: { oobCode: string; newPassword?: string; tenantId?: string; }): ResetPasswordResponse {
+        const pool = this.pool(request.tenantId);
+        const actionCode = requireActionCode(pool, request.oobCode);
         // As the emulator: without a new password (or with an empty one) the code is only read
-        if (newPassword) {
+        if (request.newPassword) {
             if (actionCode.requestType !== 'PASSWORD_RESET') {
                 throw new IdentityToolkitError(400, 'INVALID_OOB_CODE');
             }
-            if (newPassword.length < MIN_PASSWORD_LENGTH) {
+            if (request.newPassword.length < MIN_PASSWORD_LENGTH) {
                 throw new IdentityToolkitError(400, `WEAK_PASSWORD : Password should be at least ${MIN_PASSWORD_LENGTH} characters`);
             }
-            const user = this.useActionCode(oobCode, actionCode);
+            const user = useActionCode(pool, request.oobCode, actionCode);
             // As the emulator: a reset verifies the email and revokes earlier tokens, without refreshing the account
-            this.users.set(user.uid, { ...user, password: newPassword, emailVerified: true, validSinceSeconds: this.nowSeconds() });
+            pool.users.set(user.uid, { ...user, password: request.newPassword, emailVerified: true, validSinceSeconds: this.nowSeconds() });
         }
         return { requestType: actionCode.requestType, email: actionCode.email, ...(actionCode.newEmail === undefined ? {} : { newEmail: actionCode.newEmail }) };
     }
 
     /** As the emulator: an email change neither revokes tokens nor needs the new email to be free until it is applied */
-    private applyActionCode(oobCode: string): UpdateAccountResponse {
-        const actionCode = this.requireActionCode(oobCode);
+    applyActionCode(request: { oobCode: string; tenantId?: string; }): UpdateAccountResponse {
+        const pool = this.pool(request.tenantId);
+        const actionCode = requireActionCode(pool, request.oobCode);
         if (actionCode.requestType === 'PASSWORD_RESET') {
             // The emulator's answer: it does not implement this code type here
             throw new IdentityToolkitError(501, actionCode.requestType);
         }
-        const user = this.useActionCode(oobCode, actionCode);
-        if (actionCode.newEmail !== undefined && this.findByEmail(actionCode.newEmail)) {
+        const user = useActionCode(pool, request.oobCode, actionCode);
+        if (actionCode.newEmail !== undefined && pool.findByEmail(actionCode.newEmail)) {
             throw new IdentityToolkitError(400, 'EMAIL_EXISTS');
         }
         const updated: StoredUser = { ...user, email: actionCode.newEmail ?? user.email, emailVerified: true };
-        this.users.set(user.uid, updated);
+        pool.users.set(user.uid, updated);
         return { localId: updated.uid, email: updated.email!, emailVerified: updated.emailVerified };
     }
 
-    private requireActionCode(oobCode: string): ActionCode {
-        const actionCode = this.actionCodes.get(oobCode);
-        if (!actionCode) {
-            throw new IdentityToolkitError(400, 'INVALID_OOB_CODE');
-        }
-        return actionCode;
-    }
-
-    /** Uses the code up, and returns the user that has its email */
-    private useActionCode(oobCode: string, actionCode: ActionCode): StoredUser {
-        this.actionCodes.delete(oobCode);
-        const user = this.findByEmail(actionCode.email);
-        if (!user) {
-            throw new IdentityToolkitError(400, 'INVALID_OOB_CODE');
-        }
-        return user;
-    }
-
-    /** A link of the form Firebase sends, carrying the code */
-    private actionLink(oobCode: string, requestType: ActionCodeRequestType): string {
-        const query = new URLSearchParams({ mode: ACTION_LINK_MODES[requestType], oobCode, lang: 'en' });
-        return `https://${this.projectId}.firebaseapp.com/__/auth/action?${query}`;
-    }
-
-    /** A custom token's uid and developer claims, refused as the emulator refuses it, or for a signature not this stub's */
+    /** A custom token's uid and developer claims, refused as the emulator refuses it, or for a signature not this simulator's */
     private decodeCustomToken(token: string): { uid: string; claims: object; } {
         const parts = token.split('.');
         const payload = parts.length === 3 && decodeJwtPart(parts[0]) ? decodeJwtPart(parts[1]) : undefined;
@@ -505,19 +316,20 @@ export class StubAuth implements IAuth {
         return { uid: payload.uid, claims: (payload.claims as object | undefined) ?? {} };
     }
 
-    private signIn(uid: string, signInProvider: string, developerClaims: object): string {
+    /** Signs a user of the pool in, creating it if missing, and returns its ID token */
+    signIn(pool: AuthPool, uid: string, signInProvider: string, developerClaims: object): string {
         const nowMs = this.nowMs();
-        const existing = this.users.get(uid) ?? this.newUser(uid, {}, nowMs);
+        const existing = pool.users.get(uid) ?? newUser(uid, {}, nowMs);
         if (existing.disabled) {
             throw new StubAuthError(...USER_DISABLED);
         }
         const user: StoredUser = { ...existing, lastSignInAtMs: nowMs, lastRefreshAtMs: nowMs };
-        this.users.set(uid, user);
-        return this.mintJwt(this.idTokenClaims(user, signInProvider, developerClaims, toSeconds(nowMs)));
+        pool.users.set(uid, user);
+        return this.mintJwt(this.idTokenClaims(pool, user, signInProvider, developerClaims, toSeconds(nowMs)));
     }
 
-    /** An ID token's claims, as the emulator issues them */
-    private idTokenClaims(user: StoredUser, signInProvider: string, developerClaims: object, signedInAt: number): TokenClaims {
+    /** An ID token's claims, as the emulator issues them; a tenant's carry `firebase.tenant` */
+    private idTokenClaims(pool: AuthPool, user: StoredUser, signInProvider: string, developerClaims: object, signedInAt: number): TokenClaims {
         const identities: Record<string, string[]> = {};
         if (user.email !== undefined) {
             identities.email = [user.email];
@@ -534,7 +346,7 @@ export class StubAuth implements IAuth {
             ...(user.phoneNumber === undefined ? {} : { phone_number: user.phoneNumber }),
             auth_time: signedInAt,
             user_id: user.uid,
-            firebase: { identities, sign_in_provider: signInProvider },
+            firebase: { identities, sign_in_provider: signInProvider, ...(pool.tenantId === undefined ? {} : { tenant: pool.tenantId }) },
             iat: signedInAt,
             exp: signedInAt + ID_TOKEN_LIFETIME_SECONDS,
             aud: this.projectId,
@@ -543,7 +355,7 @@ export class StubAuth implements IAuth {
         };
     }
 
-    private mintJwt(payload: object): string {
+    mintJwt(payload: object): string {
         const unsigned = `${encodeJwtPart({ alg: 'HS256', typ: 'JWT' })}.${encodeJwtPart(payload)}`;
         return `${unsigned}.${this.sign(unsigned)}`;
     }
@@ -553,7 +365,7 @@ export class StubAuth implements IAuth {
     }
 
     /** As the Admin SDK: decodes, then checks the audience, issuer and signature, refusing with its messages */
-    private decodeToken(token: string, kind: TokenKind): TokenClaims {
+    decodeToken(token: string, kind: TokenKind): TokenClaims {
         const parts = typeof token === 'string' ? token.split('.') : [];
         const header = parts.length === 3 ? decodeJwtPart(parts[0]) : undefined;
         const claims = parts.length === 3 ? decodeJwtPart(parts[1]) : undefined;
@@ -579,18 +391,271 @@ export class StubAuth implements IAuth {
         }
         return claims as TokenClaims;
     }
+}
 
-    private verifyToken(token: string, kind: TokenKind, checkRevoked: boolean): DecodedIdToken {
-        const claims = this.decodeToken(token, kind);
-        if (this.nowSeconds() >= claims.exp) {
+/**
+ * The Admin SDK operations over one pool. The project-level `StubAuth` and each
+ * `StubTenantAwareAuth` are this over their own pool, sharing their simulator's tokens and clock.
+ */
+export abstract class StubPoolAuth implements IAuth {
+    readonly #authority: AuthAuthority;
+    readonly #pool: AuthPool;
+
+    protected constructor(authority: AuthAuthority, pool: AuthPool) {
+        this.#authority = authority;
+        this.#pool = pool;
+    }
+
+    async createUser(properties: CreateRequest): Promise<UserRecord> {
+        const uid = properties.uid ?? generateUid();
+        if (this.#pool.users.has(uid)) {
+            throw new StubAuthError(...UID_ALREADY_EXISTS);
+        }
+        const user = newUser(uid, properties, this.#authority.nowMs());
+        this.#pool.assertEmailAvailable(user.email, uid);
+        this.#pool.users.set(uid, user);
+        return this.#toRecord(user);
+    }
+
+    async getUser(uid: string): Promise<UserRecord> {
+        this.#throwIfFailing('getUser', uid);
+        return this.#toRecord(this.#pool.requireUser(uid));
+    }
+
+    getUsers(identifiers: UidIdentifier[]): Promise<GetUsersResult> {
+        // As the Admin SDK: too many identifiers throws at the call, before any promise
+        if (identifiers.length > MAX_GET_USERS_IDENTIFIERS) {
+            throw new StubAuthError('auth/maximum-user-count-exceeded', '`identifiers` parameter must have <= 100 entries.');
+        }
+        return this.#lookUpUsers(identifiers);
+    }
+
+    async #lookUpUsers(identifiers: UidIdentifier[]): Promise<GetUsersResult> {
+        const users = new Map<string, UserRecord>();
+        const notFound: UidIdentifier[] = [];
+        for (const identifier of identifiers) {
+            const user = this.#pool.users.get(identifier.uid);
+            if (user) {
+                users.set(user.uid, this.#toRecord(user));
+            } else {
+                notFound.push({ uid: identifier.uid });
+            }
+        }
+        return { users: [...users.values()], notFound };
+    }
+
+    async getUserByEmail(email: string): Promise<UserRecord> {
+        const user = this.#pool.findByEmail(email);
+        if (!user) {
+            throw new StubAuthError(...USER_NOT_FOUND);
+        }
+        return this.#toRecord(user);
+    }
+
+    async updateUser(uid: string, properties: UpdateRequest): Promise<UserRecord> {
+        this.#throwIfFailing('updateUser', uid);
+        const existing = this.#pool.requireUser(uid);
+        const email = properties.email === undefined ? existing.email : normalizeEmail(properties.email);
+        this.#pool.assertEmailAvailable(email, uid);
+
+        const nowMs = this.#authority.nowMs();
+        const passwordChanged = properties.password !== undefined;
+        const emailChanged = email !== existing.email;
+        const updated: StoredUser = {
+            ...existing,
+            email,
+            emailVerified: properties.emailVerified ?? existing.emailVerified,
+            displayName: properties.displayName === null ? undefined : (properties.displayName ?? existing.displayName),
+            photoURL: properties.photoURL === null ? undefined : (properties.photoURL ?? existing.photoURL),
+            phoneNumber: properties.phoneNumber === null ? undefined : (properties.phoneNumber ?? existing.phoneNumber),
+            disabled: properties.disabled ?? existing.disabled,
+            password: properties.password ?? existing.password,
+            // As the emulator: a new password refreshes the account, and a new password or email revokes earlier tokens
+            lastRefreshAtMs: passwordChanged ? nowMs : existing.lastRefreshAtMs,
+            validSinceSeconds: passwordChanged || emailChanged ? toSeconds(nowMs) : existing.validSinceSeconds,
+        };
+        this.#pool.users.set(uid, updated);
+        return this.#toRecord(updated);
+    }
+
+    async listUsers(maxResults: number = MAX_LIST_USERS_RESULTS, pageToken?: string): Promise<ListUsersResult> {
+        if (!Number.isInteger(maxResults) || maxResults <= 0 || maxResults > MAX_LIST_USERS_RESULTS) {
+            throw new StubAuthError('auth/argument-error', 'Required "maxResults" must be a positive integer that does not exceed 1000.');
+        }
+        // As the emulator: users in uid order, and the page token is the uid the next page starts after
+        const page = [...this.#pool.users.values()]
+            .sort((a, b) => (a.uid < b.uid ? -1 : a.uid > b.uid ? 1 : 0))
+            .filter((user) => pageToken === undefined || user.uid > pageToken)
+            .slice(0, maxResults);
+        const result: ListUsersResult = { users: page.map((user) => this.#toRecord(user)) };
+        if (page.length === maxResults) {
+            result.pageToken = page[page.length - 1].uid;
+        }
+        return result;
+    }
+
+    async deleteUser(uid: string): Promise<void> {
+        this.#pool.requireUser(uid);
+        this.#pool.users.delete(uid);
+    }
+
+    /** As the Admin SDK: a tenant's custom token carries its `tenant_id` */
+    async createCustomToken(uid: string, developerClaims?: object): Promise<string> {
+        // As Firebase: minted without looking the user up
+        const issuedAt = this.#authority.nowSeconds();
+        return this.#authority.mintJwt({
+            aud: CUSTOM_TOKEN_AUDIENCE,
+            iat: issuedAt,
+            exp: issuedAt + CUSTOM_TOKEN_LIFETIME_SECONDS,
+            iss: CUSTOM_TOKEN_SIGNER,
+            sub: CUSTOM_TOKEN_SIGNER,
+            uid,
+            ...(this.#pool.tenantId === undefined ? {} : { tenant_id: this.#pool.tenantId }),
+            ...(developerClaims === undefined ? {} : { claims: developerClaims }),
+        });
+    }
+
+    async verifyIdToken(idToken: string, checkRevoked = false): Promise<DecodedIdToken> {
+        return this.#verifyToken(idToken, ID_TOKEN, checkRevoked);
+    }
+
+    /**
+     * As Firebase's backend: the cookie is made in the pool the ID token belongs to. As the
+     * emulator routes it, a tenant's ID token reaches its tenant's pool even through the
+     * project-level instance, which does not check tenants.
+     */
+    async createSessionCookie(idToken: string, sessionCookieOptions: SessionCookieOptions): Promise<string> {
+        // As the Admin SDK: the duration is checked in whole seconds, rounded down
+        const expiresIn = sessionCookieOptions?.expiresIn;
+        const durationSeconds = typeof expiresIn === 'number' ? Math.floor(expiresIn / 1000) : NaN;
+        if (!(durationSeconds >= MIN_SESSION_COOKIE_SECONDS && durationSeconds <= MAX_SESSION_COOKIE_SECONDS)) {
+            throw new StubAuthError(...INVALID_SESSION_COOKIE_DURATION);
+        }
+        let claims: TokenClaims;
+        try {
+            claims = this.#authority.decodeToken(idToken, ID_TOKEN);
+        } catch {
+            throw new StubAuthError(...INVALID_ID_TOKEN);
+        }
+        const tokenTenant = claims.firebase?.tenant;
+        const pool = typeof tokenTenant === 'string' ? this.#authority.pool(tokenTenant) : this.#pool;
+        const user = pool.requireUser(claims.sub);
+        if (user.disabled) {
+            throw new StubAuthError(...USER_DISABLED);
+        }
+        // As Firebase: a revoked ID token is refused as expired
+        if (this.#authority.nowSeconds() >= claims.exp || isRevoked(user, claims)) {
+            throw new StubAuthError(...ID_TOKEN_EXPIRED);
+        }
+        // The cookie keeps the ID token's claims, auth_time and tenant included
+        const issuedAt = this.#authority.nowSeconds();
+        return this.#authority.mintJwt({ ...claims, iss: SESSION_COOKIE.issuerPrefix + this.#authority.projectId, iat: issuedAt, exp: issuedAt + durationSeconds });
+    }
+
+    async verifySessionCookie(sessionCookie: string, checkRevoked = false): Promise<DecodedIdToken> {
+        return this.#verifyToken(sessionCookie, SESSION_COOKIE, checkRevoked);
+    }
+
+    /**
+     * As Firebase: tokens become valid from this second, so ID tokens and session cookies
+     * signed in before it are revoked, and any signed in during it survive
+     */
+    async revokeRefreshTokens(uid: string): Promise<void> {
+        const user = this.#pool.requireUser(uid);
+        this.#pool.users.set(uid, { ...user, validSinceSeconds: this.#authority.nowSeconds() });
+    }
+
+    async generatePasswordResetLink(email: string): Promise<string> {
+        return this.#actionLink(this.issueActionCode(email, 'PASSWORD_RESET'), 'PASSWORD_RESET');
+    }
+
+    async generateEmailVerificationLink(email: string): Promise<string> {
+        return this.#actionLink(this.issueActionCode(email, 'VERIFY_EMAIL'), 'VERIFY_EMAIL');
+    }
+
+    async generateVerifyAndChangeEmailLink(email: string, newEmail: string): Promise<string> {
+        return this.#actionLink(this.issueActionCode(email, 'VERIFY_AND_CHANGE_EMAIL', newEmail), 'VERIFY_AND_CHANGE_EMAIL');
+    }
+
+    // Test controls
+
+    /**
+     * Writes a user straight into this pool, replacing any user with the same uid.
+     * An email that belongs to another user of the pool is refused, as `createUser` refuses it.
+     */
+    seedUser(user: SeedUser): UserRecord {
+        const stored = newUser(user.uid, user, user.creationTime?.getTime() ?? this.#authority.nowMs());
+        this.#pool.assertEmailAvailable(stored.email, user.uid);
+        this.#pool.users.set(user.uid, stored);
+        return this.#toRecord(stored);
+    }
+
+    /** Makes the next `count` calls of `operation` for a user of this pool throw `error`, leaving the user unchanged. */
+    failNext(operation: FailableAuthOperation, uid: string, count: number, error: Error): void {
+        this.#pool.failures.set(failureKey(operation, uid), { remaining: count, error });
+    }
+
+    /** How many of the failures `failNext` set up for an operation and user are still to come. */
+    remainingFailures(operation: FailableAuthOperation, uid: string): number {
+        return this.#pool.failures.get(failureKey(operation, uid))?.remaining ?? 0;
+    }
+
+    /**
+     * Signs a user of this pool in as a custom-token sign-in would, and returns its ID token: a
+     * missing user is created, a disabled one refused, and the sign-in recorded in the user's metadata.
+     */
+    issueIdToken(uid: string): string {
+        return this.#authority.signIn(this.#pool, uid, 'custom', {});
+    }
+
+    /**
+     * The oobCode the matching `generate*Link` would put in its link, refused as it refuses:
+     * an unknown email, and a new email that another user of the pool has.
+     */
+    issueActionCode(email: string, requestType: 'PASSWORD_RESET' | 'VERIFY_EMAIL'): string;
+    issueActionCode(email: string, requestType: 'VERIFY_AND_CHANGE_EMAIL', newEmail: string): string;
+    issueActionCode(email: string, requestType: ActionCodeRequestType, newEmail?: string): string {
+        const user = this.#pool.findByEmail(email);
+        if (!user) {
+            // As the Admin SDK: a password reset names the email, the other links the user
+            const [code, message] = requestType === 'PASSWORD_RESET' ? EMAIL_NOT_FOUND : USER_NOT_FOUND;
+            throw new StubAuthError(code, message);
+        }
+        const actionCode: ActionCode = { requestType, email: user.email! };
+        if (requestType === 'VERIFY_AND_CHANGE_EMAIL') {
+            if (this.#pool.findByEmail(newEmail!)) {
+                throw new StubAuthError(...EMAIL_ALREADY_EXISTS);
+            }
+            actionCode.newEmail = normalizeEmail(newEmail!);
+        }
+        const oobCode = randomBytes(40).toString('base64url');
+        this.#pool.actionCodes.set(oobCode, actionCode);
+        return oobCode;
+    }
+
+    /** A link of the form Firebase sends, carrying the code, and for a tenant the tenant ID as the emulator's links do */
+    #actionLink(oobCode: string, requestType: ActionCodeRequestType): string {
+        const query = new URLSearchParams({ mode: ACTION_LINK_MODES[requestType], oobCode, lang: 'en' });
+        if (this.#pool.tenantId !== undefined) {
+            query.set('tenantId', this.#pool.tenantId);
+        }
+        return `https://${this.#authority.projectId}.firebaseapp.com/__/auth/action?${query}`;
+    }
+
+    /**
+     * As the Admin SDK: decoded and checked for expiry; with checkRevoked, the user is looked up in
+     * this pool (against the emulator, always); and only then is the token's tenant compared
+     */
+    #verifyToken(token: string, kind: TokenKind, checkRevoked: boolean): DecodedIdToken {
+        const claims = this.#authority.decodeToken(token, kind);
+        if (this.#authority.nowSeconds() >= claims.exp) {
             throw new StubAuthError(
                 kind.expiredCode,
                 `${kind.jwtName} has expired. Get a fresh ${kind.shortName} from your client app and try again (${kind.expiredCode}).${docsMessage(kind)}`,
             );
         }
-        // As the Admin SDK: the user is looked up only when checkRevoked is set (against the emulator, always)
         if (checkRevoked) {
-            const user = this.requireUser(claims.sub);
+            const user = this.#pool.requireUser(claims.sub);
             if (user.disabled) {
                 throw new StubAuthError(...USER_DISABLED);
             }
@@ -598,54 +663,164 @@ export class StubAuth implements IAuth {
                 throw new StubAuthError(...kind.revoked);
             }
         }
+        // As the Admin SDK: a tenant-aware instance refuses another pool's token; the project-level instance compares no tenant
+        if (this.#pool.tenantId !== undefined && claims.firebase?.tenant !== this.#pool.tenantId) {
+            throw new StubAuthError(...MISMATCHING_TENANT_ID);
+        }
         return { ...claims, uid: claims.sub } as unknown as DecodedIdToken;
     }
 
-    private newUser(uid: string, properties: CreateRequest, createdAtMs: number): StoredUser {
-        return {
-            uid,
-            email: properties.email === undefined ? undefined : normalizeEmail(properties.email),
-            emailVerified: properties.emailVerified ?? false,
-            displayName: properties.displayName ?? undefined,
-            photoURL: properties.photoURL ?? undefined,
-            phoneNumber: properties.phoneNumber ?? undefined,
-            disabled: properties.disabled ?? false,
-            password: properties.password,
-            createdAtMs,
-            // As the emulator: creating an account counts as its first sign-in
-            lastSignInAtMs: createdAtMs,
-            // As the emulator: an account created with a password has its tokens valid from creation
-            validSinceSeconds: properties.password === undefined ? undefined : toSeconds(createdAtMs),
-        };
+    #toRecord(user: StoredUser): UserRecord {
+        return toUserRecord(user, this.#pool.tenantId);
     }
 
-    private requireUser(uid: string): StoredUser {
-        const user = this.users.get(uid);
-        if (!user) {
-            throw new StubAuthError(...USER_NOT_FOUND);
-        }
-        return user;
-    }
-
-    private findByEmail(email: string): StoredUser | undefined {
-        const normalized = normalizeEmail(email);
-        return [...this.users.values()].find((user) => user.email === normalized);
-    }
-
-    private assertEmailAvailable(email: string | undefined, uid: string): void {
-        const owner = email === undefined ? undefined : this.findByEmail(email);
-        if (owner && owner.uid !== uid) {
-            throw new StubAuthError(...EMAIL_ALREADY_EXISTS);
-        }
-    }
-
-    private throwIfFailing(operation: FailableAuthOperation, uid: string): void {
-        const failure = this.failures.get(failureKey(operation, uid));
+    #throwIfFailing(operation: FailableAuthOperation, uid: string): void {
+        const failure = this.#pool.failures.get(failureKey(operation, uid));
         if (failure && failure.remaining > 0) {
             failure.remaining--;
             throw failure.error;
         }
     }
+}
+
+/**
+ * One Identity Platform tenant's Admin operations, as `TenantAwareAuth` performs them: users,
+ * emails and action codes of its own pool, tokens carrying its tenant ID, and verification that
+ * refuses a token or cookie of another pool with `auth/mismatching-tenant-id`. Obtained from
+ * `StubAuth.tenantManager().authForTenant()`; it shares its `StubAuth`'s tokens and clock.
+ */
+export class StubTenantAwareAuth extends StubPoolAuth implements ITenantAwareAuth {
+    readonly tenantId: string;
+
+    /** Made by `StubAuth`; not exported for construction */
+    constructor(authority: AuthAuthority, tenantId: string) {
+        super(authority, authority.pool(tenantId));
+        this.tenantId = tenantId;
+    }
+
+    /** As the Admin SDK: the ID token is verified for this tenant before the cookie is asked for */
+    override async createSessionCookie(idToken: string, sessionCookieOptions: SessionCookieOptions): Promise<string> {
+        if (typeof idToken !== 'string' || idToken === '') {
+            throw new StubAuthError(...INVALID_ID_TOKEN);
+        }
+        if (typeof sessionCookieOptions?.expiresIn !== 'number') {
+            throw new StubAuthError(...INVALID_SESSION_COOKIE_DURATION);
+        }
+        await this.verifyIdToken(idToken);
+        return super.createSessionCookie(idToken, sessionCookieOptions);
+    }
+}
+
+/** The tenants of one `StubAuth`, as `TenantManager.authForTenant` reaches them */
+export class StubTenantManager implements ITenantManager {
+    readonly #authority: AuthAuthority;
+    /** As the Admin SDK: one instance per tenant, made on first request and kept for the manager's life */
+    readonly #tenants = new Map<string, StubTenantAwareAuth>();
+
+    /** Made by `StubAuth`; not exported for construction */
+    constructor(authority: AuthAuthority) {
+        this.#authority = authority;
+    }
+
+    /** As the emulator: an unknown tenant is not refused; its pool begins empty */
+    authForTenant(tenantId: string): StubTenantAwareAuth {
+        if (typeof tenantId !== 'string' || tenantId === '') {
+            throw new StubAuthError(...INVALID_TENANT_ID);
+        }
+        let tenantAuth = this.#tenants.get(tenantId);
+        if (!tenantAuth) {
+            tenantAuth = new StubTenantAwareAuth(this.#authority, tenantId);
+            this.#tenants.set(tenantId, tenantAuth);
+        }
+        return tenantAuth;
+    }
+}
+
+/**
+ * In-memory implementation of Firebase Auth for testing, matching the Auth emulator's behaviour.
+ * Its tokens are JWTs signed with a key of its own, so only tokens it issued verify. It holds the
+ * project's own pool of accounts, and through `tenantManager()` one pool per Identity Platform tenant.
+ */
+export class StubAuth extends StubPoolAuth {
+    readonly #authority: AuthAuthority;
+    readonly #authClient: IAuthClient;
+    readonly #tenants: StubTenantManager;
+
+    constructor(options: StubAuthOptions = {}) {
+        const authority = new AuthAuthority(options.projectId ?? 'test-project');
+        super(authority, authority.rootPool);
+        this.#authority = authority;
+        this.#tenants = new StubTenantManager(authority);
+        this.#authClient = {
+            signInWithPassword: async (request) => authority.signInWithPassword(request),
+            signInWithCustomToken: async (request) => authority.signInWithCustomToken(request),
+            resetPassword: async (request) => authority.resetPassword(request),
+            applyActionCode: async (request) => authority.applyActionCode(request),
+        };
+    }
+
+    /**
+     * The REST API client over this simulator's pools and tokens, as an app's admin and REST calls
+     * reach the same project. A request's `tenantId` selects a tenant's pool; without one it reaches the project's.
+     */
+    client(): IAuthClient {
+        return this.#authClient;
+    }
+
+    /** The tenants of this simulator, each with its own pool */
+    tenantManager(): StubTenantManager {
+        return this.#tenants;
+    }
+
+    /**
+     * Moves the simulator's clock forward, for every pool's token expiry and revocation. Firebase
+     * compares a token's sign-in second with the second its user's tokens were revoked, so a test
+     * that revokes a token it has just issued advances the clock a second first.
+     */
+    advanceClock(ms: number): void {
+        this.#authority.advanceClock(ms);
+    }
+
+    /** Removes every user, action code and pending failure, in the project's pool and every tenant's. */
+    clear(): void {
+        this.#authority.clear();
+    }
+}
+
+function requireActionCode(pool: AuthPool, oobCode: string): ActionCode {
+    const actionCode = pool.actionCodes.get(oobCode);
+    if (!actionCode) {
+        throw new IdentityToolkitError(400, 'INVALID_OOB_CODE');
+    }
+    return actionCode;
+}
+
+/** Uses the code up, and returns the user of the pool that has its email */
+function useActionCode(pool: AuthPool, oobCode: string, actionCode: ActionCode): StoredUser {
+    pool.actionCodes.delete(oobCode);
+    const user = pool.findByEmail(actionCode.email);
+    if (!user) {
+        throw new IdentityToolkitError(400, 'INVALID_OOB_CODE');
+    }
+    return user;
+}
+
+function newUser(uid: string, properties: CreateRequest, createdAtMs: number): StoredUser {
+    return {
+        uid,
+        email: properties.email === undefined ? undefined : normalizeEmail(properties.email),
+        emailVerified: properties.emailVerified ?? false,
+        displayName: properties.displayName ?? undefined,
+        photoURL: properties.photoURL ?? undefined,
+        phoneNumber: properties.phoneNumber ?? undefined,
+        disabled: properties.disabled ?? false,
+        password: properties.password,
+        createdAtMs,
+        // As the emulator: creating an account counts as its first sign-in
+        lastSignInAtMs: createdAtMs,
+        // As the emulator: an account created with a password has its tokens valid from creation
+        validSinceSeconds: properties.password === undefined ? undefined : toSeconds(createdAtMs),
+    };
 }
 
 function isRevoked(user: StoredUser, claims: TokenClaims): boolean {
@@ -697,7 +872,7 @@ function toUtcString(ms: number): string {
     return new Date(toSeconds(ms) * 1000).toUTCString();
 }
 
-function toUserRecord(user: StoredUser): UserRecord {
+function toUserRecord(user: StoredUser, tenantId: string | undefined): UserRecord {
     const metadataFields = {
         lastSignInTime: toUtcString(user.lastSignInAtMs),
         creationTime: toUtcString(user.createdAtMs),
@@ -722,7 +897,7 @@ function toUserRecord(user: StoredUser): UserRecord {
         phoneNumber: user.phoneNumber,
         disabled: user.disabled,
         tokensValidAfterTime: user.validSinceSeconds === undefined ? undefined : new Date(user.validSinceSeconds * 1000).toUTCString(),
-        tenantId: undefined,
+        tenantId,
     };
     return {
         ...fields,

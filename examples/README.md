@@ -41,6 +41,7 @@ npx tsx examples/<filename>.ts
 | File | Description |
 |------|-------------|
 | `auth-basic.ts` | Users, sign-in, action codes and token expiry |
+| `auth-tenants.ts` | The same email in two tenants, and refusing another tenant's token |
 
 ## Cloud Tasks
 

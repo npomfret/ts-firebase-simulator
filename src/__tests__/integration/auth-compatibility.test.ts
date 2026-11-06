@@ -7,7 +7,8 @@
  * 2. Emulator - runs when FIREBASE_AUTH_EMULATOR_HOST is set
  *
  * There is no real-Firebase mode: it would create real accounts and needs a web
- * API key and the Email/Password provider enabled.
+ * API key and the Email/Password provider enabled, and the tenant tests also need
+ * Identity Platform multi-tenancy enabled on the project.
  *
  * Configuration:
  * - Stub: No configuration needed
@@ -16,32 +17,45 @@
 
 import { getApps, initializeApp } from 'firebase-admin/app';
 import { getAuth, type UserRecord } from 'firebase-admin/auth';
-import { createAuth, createAuthClient, type IAuth, type IAuthClient, IdentityToolkitError, StubAuth } from 'ts-firebase-simulator';
+import { createAuth, createAuthClient, createTenantManager, type IAuth, type IAuthClient, IdentityToolkitError, type ITenantAwareAuth, type ITenantManager, StubAuth } from 'ts-firebase-simulator';
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 type TestMode = 'stub' | 'emulator';
 
 const EMULATOR_PROJECT_ID = 'demo-test-project';
 const EMULATOR_APP_NAME = 'auth-emulator-app';
+/** The emulator creates a tenant the first time it is used */
+const TENANT_A = 'tenant-a';
+const TENANT_B = 'tenant-b';
 
 function emulatorHost(): string | undefined {
     return process.env.FIREBASE_AUTH_EMULATOR_HOST;
 }
 
+function getEmulatorApp() {
+    return getApps().find((existing) => existing.name === EMULATOR_APP_NAME) ?? initializeApp({ projectId: EMULATOR_PROJECT_ID }, EMULATOR_APP_NAME);
+}
+
 function getEmulatorAuth(): IAuth {
-    const app = getApps().find((existing) => existing.name === EMULATOR_APP_NAME) ?? initializeApp({ projectId: EMULATOR_PROJECT_ID }, EMULATOR_APP_NAME);
-    return createAuth(getAuth(app));
+    return createAuth(getAuth(getEmulatorApp()));
+}
+
+function getEmulatorTenantManager(): ITenantManager {
+    return createTenantManager(getAuth(getEmulatorApp()).tenantManager());
 }
 
 function getEmulatorAuthClient(): IAuthClient {
     return createAuthClient({ apiKey: 'fake-api-key', baseUrl: `http://${emulatorHost()}/identitytoolkit.googleapis.com` });
 }
 
-/** Deletes every account in the emulator's project */
+/** Deletes every account in the emulator's project, and in the tenants the tests use */
 async function clearEmulatorAccounts(): Promise<void> {
-    const response = await fetch(`http://${emulatorHost()}/emulator/v1/projects/${EMULATOR_PROJECT_ID}/accounts`, { method: 'DELETE' });
-    if (!response.ok) {
-        throw new Error(`Clearing emulator accounts failed: HTTP ${response.status}`);
+    const project = `http://${emulatorHost()}/emulator/v1/projects/${EMULATOR_PROJECT_ID}`;
+    for (const url of [`${project}/accounts`, `${project}/tenants/${TENANT_A}/accounts`, `${project}/tenants/${TENANT_B}/accounts`]) {
+        const response = await fetch(url, { method: 'DELETE' });
+        if (!response.ok) {
+            throw new Error(`Clearing emulator accounts at ${url} failed: HTTP ${response.status}`);
+        }
     }
 }
 
@@ -59,6 +73,11 @@ async function emulatorSignIn(auth: IAuth, uid: string): Promise<string> {
     return body.idToken;
 }
 
+/** A JWT's payload, read without verifying it */
+function jwtPayload(token: string): Record<string, unknown> {
+    return JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString('utf8')) as Record<string, unknown>;
+}
+
 /** The oobCode an action link carries */
 function oobCodeOf(link: string): string {
     return new URL(link).searchParams.get('oobCode')!;
@@ -74,6 +93,7 @@ describe('Auth Stub Compatibility - Integration Test', () => {
     let stubAuth: StubAuth;
     let emulatorAuth: IAuth | null = null;
     let emulatorAuthClient: IAuthClient | null = null;
+    let emulatorTenantManager: ITenantManager | null = null;
     const emulatorAvailable = !!emulatorHost();
 
     beforeAll(() => {
@@ -81,6 +101,7 @@ describe('Auth Stub Compatibility - Integration Test', () => {
         if (emulatorAvailable) {
             emulatorAuth = getEmulatorAuth();
             emulatorAuthClient = getEmulatorAuthClient();
+            emulatorTenantManager = getEmulatorTenantManager();
         }
     });
 
@@ -110,6 +131,27 @@ describe('Auth Stub Compatibility - Integration Test', () => {
         if (emulatorAuth && emulatorAuthClient) {
             await testFn(emulatorAuth, 'emulator', emulatorAuthClient);
         }
+    }
+
+    /** The project's pool and two tenants' pools of one implementation */
+    interface Pools {
+        root: IAuth;
+        a: ITenantAwareAuth;
+        b: ITenantAwareAuth;
+    }
+
+    async function testAllTenantImplementations(testFn: (pools: Pools, mode: TestMode, client: IAuthClient) => Promise<void>) {
+        const stubTenants = stubAuth.tenantManager();
+        await testFn({ root: stubAuth, a: stubTenants.authForTenant(TENANT_A), b: stubTenants.authForTenant(TENANT_B) }, 'stub', stubAuth.client());
+        if (emulatorAuth && emulatorAuthClient && emulatorTenantManager) {
+            await testFn({ root: emulatorAuth, a: emulatorTenantManager.authForTenant(TENANT_A), b: emulatorTenantManager.authForTenant(TENANT_B) }, 'emulator', emulatorAuthClient);
+        }
+    }
+
+    /** An ID token for the pool's user, from a custom-token sign-in through the REST API in that pool */
+    async function signInToPool(client: IAuthClient, auth: IAuth | ITenantAwareAuth, uid: string): Promise<string> {
+        const tenantId = 'tenantId' in auth ? auth.tenantId : undefined;
+        return (await client.signInWithCustomToken({ token: await auth.createCustomToken(uid), returnSecureToken: true, tenantId })).idToken;
     }
 
     /** Expects the call to fail as the REST API fails it: an IdentityToolkitError with HTTP 400 */
@@ -849,6 +891,216 @@ describe('Auth Stub Compatibility - Integration Test', () => {
                 const emailExists = { code: 'auth/email-already-exists', message: 'The email address is already in use by another account.' };
                 await expect(auth.generateVerifyAndChangeEmailLink('settled@example.com', 'Neighbour@Example.com'), `taken (${mode})`).rejects.toMatchObject(emailExists);
                 await expect(auth.generateVerifyAndChangeEmailLink('settled@example.com', 'settled@example.com'), `own (${mode})`).rejects.toMatchObject(emailExists);
+            });
+        });
+    });
+
+    describe('tenants', () => {
+        const mismatchingTenant = { code: 'auth/mismatching-tenant-id', message: 'User tenant ID does not match with the current TenantAwareAuth tenant ID.' };
+        const FIVE_MINUTES = 5 * 60 * 1000;
+
+        it('keeps the same email in each pool as a separate account with its own password', async () => {
+            await testAllTenantImplementations(async ({ root, a, b }, mode, client) => {
+                const inA = await a.createUser({ email: 'Shared@Example.com', password: 'password-a' });
+                const inB = await b.createUser({ email: 'shared@example.com', password: 'password-b' });
+                const inRoot = await root.createUser({ email: 'shared@example.com', password: 'password-root' });
+
+                expect(new Set([inA.uid, inB.uid, inRoot.uid]).size, `separate uids (${mode})`).toBe(3);
+                expect(inA.tenantId, `tenant A record (${mode})`).toBe(TENANT_A);
+                expect(inB.tenantId, `tenant B record (${mode})`).toBe(TENANT_B);
+                expect(inRoot.tenantId, `root record (${mode})`).toBeUndefined();
+                expect((await a.getUserByEmail('shared@example.com')).toJSON(), `A lookup (${mode})`).toEqual(inA.toJSON());
+                expect((await b.getUserByEmail('SHARED@example.com')).uid, `B lookup (${mode})`).toBe(inB.uid);
+                expect((await root.getUserByEmail('shared@example.com')).uid, `root lookup (${mode})`).toBe(inRoot.uid);
+
+                const signedInA = await client.signInWithPassword({ email: 'shared@example.com', password: 'password-a', returnSecureToken: true, tenantId: TENANT_A });
+                expect(signedInA.localId, `A sign-in (${mode})`).toBe(inA.uid);
+                expect((await a.verifyIdToken(signedInA.idToken!, true)).firebase, `A token (${mode})`).toEqual({
+                    identities: { email: ['shared@example.com'] },
+                    sign_in_provider: 'password',
+                    tenant: TENANT_A,
+                });
+                const signedInB = await client.signInWithPassword({ email: 'shared@example.com', password: 'password-b', returnSecureToken: true, tenantId: TENANT_B });
+                expect(signedInB.localId, `B sign-in (${mode})`).toBe(inB.uid);
+                const signedInRoot = await client.signInWithPassword({ email: 'shared@example.com', password: 'password-root', returnSecureToken: true });
+                expect(signedInRoot.localId, `root sign-in (${mode})`).toBe(inRoot.uid);
+                expect((await root.verifyIdToken(signedInRoot.idToken!, true)).firebase.tenant, `root token (${mode})`).toBeUndefined();
+
+                await expectIdentityToolkitError(
+                    client.signInWithPassword({ email: 'shared@example.com', password: 'password-b', returnSecureToken: true, tenantId: TENANT_A }),
+                    'INVALID_PASSWORD',
+                    `B's password in A (${mode})`,
+                );
+                await expectIdentityToolkitError(
+                    client.signInWithPassword({ email: 'shared@example.com', password: 'password-a', returnSecureToken: true }),
+                    'INVALID_PASSWORD',
+                    `A's password in root (${mode})`,
+                );
+            });
+        });
+
+        it('refuses a duplicate email within a tenant, and finds users only in their own pool', async () => {
+            await testAllTenantImplementations(async ({ root, a, b }, mode, client) => {
+                await a.createUser({ uid: 'only-in-a', email: 'only-in-a@example.com', password: 'secret1' });
+
+                await expect(a.createUser({ email: 'ONLY-IN-A@example.com' }), `duplicate in A (${mode})`).rejects.toMatchObject({ code: 'auth/email-already-exists' });
+                await expect(b.getUser('only-in-a'), `B getUser (${mode})`).rejects.toMatchObject({ code: 'auth/user-not-found' });
+                await expect(root.getUser('only-in-a'), `root getUser (${mode})`).rejects.toMatchObject({ code: 'auth/user-not-found' });
+                await expect(b.getUserByEmail('only-in-a@example.com'), `B getUserByEmail (${mode})`).rejects.toMatchObject({ code: 'auth/user-not-found' });
+                expect((await b.getUsers([{ uid: 'only-in-a' }])).notFound, `B getUsers (${mode})`).toEqual([{ uid: 'only-in-a' }]);
+                expect((await a.getUsers([{ uid: 'only-in-a' }])).users.map((user) => user.uid), `A getUsers (${mode})`).toEqual(['only-in-a']);
+                expect((await b.listUsers()).users, `B listUsers (${mode})`).toEqual([]);
+                expect((await a.listUsers()).users.map((user) => user.uid), `A listUsers (${mode})`).toEqual(['only-in-a']);
+                await expect(b.updateUser('only-in-a', { displayName: 'x' }), `B updateUser (${mode})`).rejects.toMatchObject({ code: 'auth/user-not-found' });
+                await expect(b.deleteUser('only-in-a'), `B deleteUser (${mode})`).rejects.toMatchObject({ code: 'auth/user-not-found' });
+                await expectIdentityToolkitError(
+                    client.signInWithPassword({ email: 'only-in-a@example.com', password: 'secret1', returnSecureToken: true, tenantId: TENANT_B }),
+                    'EMAIL_NOT_FOUND',
+                    `B sign-in (${mode})`,
+                );
+
+                await a.deleteUser('only-in-a');
+                await expect(a.getUser('only-in-a'), `deleted from A (${mode})`).rejects.toMatchObject({ code: 'auth/user-not-found' });
+            });
+        });
+
+        it('refuses an ID token and session cookie of another pool, after any revocation check', async () => {
+            await testAllTenantImplementations(async ({ root, a, b }, mode, client) => {
+                // The same uid in every pool, so a revocation check finds a user and the tenant is what is refused
+                for (const pool of [root, a, b]) {
+                    await pool.createUser({ uid: 'member' });
+                }
+                await a.createUser({ uid: 'a-only' });
+                const tokenA = await signInToPool(client, a, 'member');
+                const rootToken = await signInToPool(client, root, 'member');
+                const cookieA = await a.createSessionCookie(tokenA, { expiresIn: FIVE_MINUTES });
+
+                expect((await a.verifyIdToken(tokenA, true)).firebase.tenant, `A token in A (${mode})`).toBe(TENANT_A);
+                expect(await a.verifySessionCookie(cookieA, true), `A cookie in A (${mode})`).toMatchObject({
+                    uid: 'member',
+                    iss: `https://session.firebase.google.com/${EMULATOR_PROJECT_ID}`,
+                    firebase: { tenant: TENANT_A },
+                });
+
+                await expect(b.verifyIdToken(tokenA, true), `A token in B (${mode})`).rejects.toMatchObject(mismatchingTenant);
+                await expect(b.verifySessionCookie(cookieA, true), `A cookie in B (${mode})`).rejects.toMatchObject(mismatchingTenant);
+                await expect(b.createSessionCookie(tokenA, { expiresIn: FIVE_MINUTES }), `A token to a B cookie (${mode})`).rejects.toMatchObject(mismatchingTenant);
+                await expect(a.verifyIdToken(rootToken, true), `root token in A (${mode})`).rejects.toMatchObject(mismatchingTenant);
+                await expect(a.createSessionCookie(rootToken, { expiresIn: FIVE_MINUTES }), `root token to an A cookie (${mode})`).rejects.toMatchObject(mismatchingTenant);
+
+                // As the Admin SDK: the project-level instance compares no tenant, and looks the uid up in the project's own pool
+                expect((await root.verifyIdToken(tokenA, true)).firebase.tenant, `A token at project level (${mode})`).toBe(TENANT_A);
+                expect((await root.verifySessionCookie(cookieA, true)).firebase.tenant, `A cookie at project level (${mode})`).toBe(TENANT_A);
+                await expect(root.verifyIdToken(await signInToPool(client, a, 'a-only'), true), `A-only user at project level (${mode})`).rejects.toMatchObject({
+                    code: 'auth/user-not-found',
+                });
+                await expect(b.verifyIdToken(await signInToPool(client, a, 'a-only'), true), `A-only user in B (${mode})`).rejects.toMatchObject({ code: 'auth/user-not-found' });
+            });
+        });
+
+        it('revokes tokens and cookies in one pool only', async () => {
+            await testAllTenantImplementations(async ({ a, b }, mode, client) => {
+                await a.createUser({ uid: 'member' });
+                await b.createUser({ uid: 'member' });
+                const tokenA = await signInToPool(client, a, 'member');
+                const tokenB = await signInToPool(client, b, 'member');
+                const cookieA = await a.createSessionCookie(tokenA, { expiresIn: FIVE_MINUTES });
+                const cookieB = await b.createSessionCookie(tokenB, { expiresIn: FIVE_MINUTES });
+
+                await passOneSecond(mode);
+                await a.revokeRefreshTokens('member');
+
+                expectRecentUtcString((await a.getUser('member')).tokensValidAfterTime, `A tokensValidAfterTime (${mode})`);
+                expect((await b.getUser('member')).tokensValidAfterTime, `B tokensValidAfterTime (${mode})`).toBeUndefined();
+                await expect(a.verifyIdToken(tokenA, true), `A token (${mode})`).rejects.toMatchObject({ code: 'auth/id-token-revoked' });
+                await expect(a.verifySessionCookie(cookieA, true), `A cookie (${mode})`).rejects.toMatchObject({ code: 'auth/session-cookie-revoked' });
+                await expect(b.verifyIdToken(tokenB, true), `B token (${mode})`).resolves.toMatchObject({ uid: 'member' });
+                await expect(b.verifySessionCookie(cookieB, true), `B cookie (${mode})`).resolves.toMatchObject({ uid: 'member' });
+
+                await passOneSecond(mode);
+                await expect(a.verifyIdToken(await signInToPool(client, a, 'member'), true), `fresh A sign-in (${mode})`).resolves.toMatchObject({ uid: 'member' });
+            });
+        });
+
+        it('mints custom tokens for its tenant, and refuses them in another tenant\'s sign-in', async () => {
+            await testAllTenantImplementations(async ({ root, a, b }, mode, client) => {
+                const tokenA = await a.createCustomToken('newcomer', { role: 'admin' });
+                const rootCustomToken = await root.createCustomToken('newcomer');
+
+                expect(jwtPayload(tokenA).tenant_id, `A custom token (${mode})`).toBe(TENANT_A);
+                expect(jwtPayload(rootCustomToken).tenant_id, `root custom token (${mode})`).toBeUndefined();
+                await expectIdentityToolkitError(client.signInWithCustomToken({ token: tokenA, returnSecureToken: true, tenantId: TENANT_B }), 'TENANT_ID_MISMATCH', `A token in B (${mode})`);
+                await expectIdentityToolkitError(
+                    client.signInWithCustomToken({ token: rootCustomToken, returnSecureToken: true, tenantId: TENANT_A }),
+                    'TENANT_ID_MISMATCH',
+                    `root token in A (${mode})`,
+                );
+
+                const { idToken } = await client.signInWithCustomToken({ token: tokenA, returnSecureToken: true, tenantId: TENANT_A });
+
+                expect(await a.verifyIdToken(idToken, true), `claims (${mode})`).toMatchObject({ uid: 'newcomer', role: 'admin', firebase: { sign_in_provider: 'custom', tenant: TENANT_A } });
+                expect((await a.getUser('newcomer')).tenantId, `created in A (${mode})`).toBe(TENANT_A);
+                await expect(b.getUser('newcomer'), `not in B (${mode})`).rejects.toMatchObject({ code: 'auth/user-not-found' });
+                await expect(root.getUser('newcomer'), `not in root (${mode})`).rejects.toMatchObject({ code: 'auth/user-not-found' });
+            });
+        });
+
+        it('resets the password in its own pool only, refusing the code in another pool', async () => {
+            await testAllTenantImplementations(async ({ root, a, b }, mode, client) => {
+                const inA = await a.createUser({ email: 'shared@example.com', password: 'password-a' });
+                await b.createUser({ email: 'shared@example.com', password: 'password-b' });
+                await root.createUser({ email: 'shared@example.com', password: 'password-root' });
+                const link = await a.generatePasswordResetLink('shared@example.com');
+                const oobCode = oobCodeOf(link);
+
+                expect(new URL(link).searchParams.get('tenantId'), `link tenant (${mode})`).toBe(TENANT_A);
+                await expectIdentityToolkitError(client.resetPassword({ oobCode, tenantId: TENANT_B }), 'INVALID_OOB_CODE', `read in B (${mode})`);
+                await expectIdentityToolkitError(client.resetPassword({ oobCode, newPassword: 'changed1', tenantId: TENANT_B }), 'INVALID_OOB_CODE', `reset in B (${mode})`);
+                await expectIdentityToolkitError(client.resetPassword({ oobCode, newPassword: 'changed1' }), 'INVALID_OOB_CODE', `reset in root (${mode})`);
+
+                await expect(client.resetPassword({ oobCode, newPassword: 'changed1', tenantId: TENANT_A }), `reset in A (${mode})`).resolves.toMatchObject({
+                    requestType: 'PASSWORD_RESET',
+                    email: 'shared@example.com',
+                });
+
+                const signIn = (password: string, tenantId?: string) => client.signInWithPassword({ email: 'shared@example.com', password, returnSecureToken: true, tenantId });
+                await expect(signIn('changed1', TENANT_A), `new A password (${mode})`).resolves.toMatchObject({ localId: inA.uid });
+                await expectIdentityToolkitError(signIn('password-a', TENANT_A), 'INVALID_PASSWORD', `old A password (${mode})`);
+                await expectIdentityToolkitError(signIn('changed1', TENANT_B), 'INVALID_PASSWORD', `new A password in B (${mode})`);
+                await expect(signIn('password-b', TENANT_B), `B password (${mode})`).resolves.toMatchObject({ email: 'shared@example.com' });
+                await expect(signIn('password-root'), `root password (${mode})`).resolves.toMatchObject({ email: 'shared@example.com' });
+                expect((await b.getUserByEmail('shared@example.com')).emailVerified, `B unverified (${mode})`).toBe(false);
+            });
+        });
+
+        it('verifies and changes an email in its own pool only, refusing the code in another pool', async () => {
+            await testAllTenantImplementations(async ({ a, b }, mode, client) => {
+                const inA = await a.createUser({ email: 'shared@example.com' });
+                const inB = await b.createUser({ email: 'shared@example.com' });
+                await b.createUser({ email: 'taken-in-b@example.com' });
+                const verifyCode = oobCodeOf(await a.generateEmailVerificationLink('shared@example.com'));
+
+                await expectIdentityToolkitError(client.applyActionCode({ oobCode: verifyCode, tenantId: TENANT_B }), 'INVALID_OOB_CODE', `verify in B (${mode})`);
+                await expectIdentityToolkitError(client.applyActionCode({ oobCode: verifyCode }), 'INVALID_OOB_CODE', `verify in root (${mode})`);
+                await expect(client.applyActionCode({ oobCode: verifyCode, tenantId: TENANT_A }), `verify in A (${mode})`).resolves.toMatchObject({
+                    localId: inA.uid,
+                    emailVerified: true,
+                });
+                expect((await b.getUser(inB.uid)).emailVerified, `B unverified (${mode})`).toBe(false);
+
+                // An email in use in another pool is free in this one
+                const changeLink = await a.generateVerifyAndChangeEmailLink('shared@example.com', 'taken-in-b@example.com');
+                const changeCode = oobCodeOf(changeLink);
+                expect(new URL(changeLink).searchParams.get('tenantId'), `link tenant (${mode})`).toBe(TENANT_A);
+                await expectIdentityToolkitError(client.applyActionCode({ oobCode: changeCode, tenantId: TENANT_B }), 'INVALID_OOB_CODE', `change in B (${mode})`);
+                await expect(client.applyActionCode({ oobCode: changeCode, tenantId: TENANT_A }), `change in A (${mode})`).resolves.toMatchObject({
+                    localId: inA.uid,
+                    email: 'taken-in-b@example.com',
+                });
+
+                expect((await a.getUserByEmail('taken-in-b@example.com')).uid, `A's new email (${mode})`).toBe(inA.uid);
+                expect((await b.getUserByEmail('shared@example.com')).uid, `B keeps its email (${mode})`).toBe(inB.uid);
+                expect((await b.getUserByEmail('taken-in-b@example.com')).uid, `B's other user (${mode})`).not.toBe(inA.uid);
             });
         });
     });

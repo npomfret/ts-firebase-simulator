@@ -135,7 +135,7 @@ Cloud Tasks does **not** have an official Firebase emulator. When running in emu
 
 ### Auth Note
 
-Auth tests run against the stub and the emulator only; there is no real-Firebase mode. Running them against a real project would create real accounts, and would need a web API key and the Email/Password provider enabled. The emulators run as the project `demo-test-project`, so the Admin SDK and the REST client reach the same accounts.
+Auth tests run against the stub and the emulator only; there is no real-Firebase mode. Running them against a real project would create real accounts, and would need a web API key and the Email/Password provider enabled. The emulators run as the project `demo-test-project`, so the Admin SDK and the REST client reach the same accounts. The tenant tests use the tenants `tenant-a` and `tenant-b`, which the emulator creates on first use; a real-Firebase run of them would also need Identity Platform multi-tenancy enabled on the project.
 
 ## Commands
 
