@@ -33,7 +33,7 @@ export {
 export type { IAuth, ITenantAwareAuth, ITenantManager } from './auth-types';
 export type { ICloudTasksClient } from './cloudtasks-types';
 export type { GetSignedUrlConfig, IStorage, IStorageBucket, IStorageFile, StorageFileContent, StorageFileMetadata, StorageSaveOptions } from './storage-types';
-export { type FailableAuthOperation, type SeedUser, StubAuth, StubAuthError, type StubAuthOptions, StubTenantAwareAuth, StubTenantManager } from './StubAuth';
+export { type FailableAuthOperation, type SeedUser, StubAuth, StubAuthError, type StubAuthOptions, StubTenantAwareAuth, StubTenantManager, type StubTenantOptions } from './StubAuth';
 export { type EnqueuedTask, StubCloudTasksClient } from './StubCloudTasksClient';
 export { type FirestoreTriggerChange, type FirestoreTriggerChangeHandler, type FirestoreTriggerEventType, type FirestoreTriggerHandlers, StubFirestoreDatabase } from './StubFirestoreDatabase';
 export { type SeedFileOptions, type StoredFileSnapshot, StubStorage, StubStorageBucket, StubStorageFile, type StubStorageOptions } from './StubStorage';

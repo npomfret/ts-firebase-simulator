@@ -152,8 +152,13 @@ Callers that asserted the old behaviour will need updating:
      checked for an email-change code in that state, so it keeps the old answer
      (`INVALID_OOB_CODE`, code used up).
 
-Additive: `StubAuthOptions.emailEnumerationProtection` and
-`tenantEmailEnumerationProtection`, and `UpdateAccountResponse.newEmail`.
+Additive: `StubAuthOptions.emailEnumerationProtection` and `tenants` (each
+tenant with its own `emailEnumerationProtection`), and
+`UpdateAccountResponse.newEmail`. The tenant API is not in 0.14.0, so declaring
+tenants and refusing undeclared ones breaks no released caller.
+
+Release: `prepublishOnly` now runs `npm run build`, so a publish always builds
+`dist/` first; `npm publish --dry-run` with `dist/` deleted rebuilt it.
 
 ### Tests
 

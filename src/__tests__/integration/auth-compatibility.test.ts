@@ -39,6 +39,8 @@ const REAL_TENANT_NAMES = ['tenant-1', 'tenant-2'] as const;
 /** The emulator creates a tenant the first time it is used */
 const TENANT_A = 'tenant-a';
 const TENANT_B = 'tenant-b';
+/** A tenant ID no implementation's project has; the emulator creates it on use */
+const UNKNOWN_TENANT = 'no-such-tenant';
 
 function emulatorHost(): string | undefined {
     return process.env.FIREBASE_AUTH_EMULATOR_HOST;
@@ -223,7 +225,7 @@ describe('Auth Stub Compatibility - Integration Test', { timeout: realModeRuns ?
     });
 
     beforeEach(async () => {
-        stubAuth = new StubAuth({ projectId: EMULATOR_PROJECT_ID });
+        stubAuth = new StubAuth({ projectId: EMULATOR_PROJECT_ID, tenants: { [TENANT_A]: {}, [TENANT_B]: {} } });
         if (emulatorAvailable) {
             await clearEmulatorAccounts();
         }
@@ -270,22 +272,36 @@ describe('Auth Stub Compatibility - Integration Test', { timeout: realModeRuns ?
         }
     }
 
-    /** The project's pool and two tenants' pools of one implementation */
+    /** The project's pool and two tenants' pools of one implementation, and a tenant its project does not have */
     interface Pools {
         root: IAuth;
         a: ITenantAwareAuth;
         b: ITenantAwareAuth;
+        unknown: ITenantAwareAuth;
     }
 
     async function testAllTenantImplementations(testFn: (pools: Pools, mode: TestMode, client: IAuthClient) => Promise<void>) {
         const stubTenants = stubAuth.tenantManager();
-        await testFn({ root: stubAuth, a: stubTenants.authForTenant(TENANT_A), b: stubTenants.authForTenant(TENANT_B) }, 'stub', stubAuth.client());
+        await testFn({ root: stubAuth, a: stubTenants.authForTenant(TENANT_A), b: stubTenants.authForTenant(TENANT_B), unknown: stubTenants.authForTenant(UNKNOWN_TENANT) }, 'stub', stubAuth.client());
         if (emulatorAuth && emulatorAuthClient && emulatorTenantManager) {
-            await testFn({ root: emulatorAuth, a: emulatorTenantManager.authForTenant(TENANT_A), b: emulatorTenantManager.authForTenant(TENANT_B) }, 'emulator', emulatorAuthClient);
+            await testFn(
+                {
+                    root: emulatorAuth,
+                    a: emulatorTenantManager.authForTenant(TENANT_A),
+                    b: emulatorTenantManager.authForTenant(TENANT_B),
+                    unknown: emulatorTenantManager.authForTenant(UNKNOWN_TENANT),
+                },
+                'emulator',
+                emulatorAuthClient,
+            );
         }
         if (realAuth && real && realTenantManager) {
             const [tenantA, tenantB] = real.tenantIds;
-            await testFn({ root: realAuth, a: realTenantManager.authForTenant(tenantA), b: realTenantManager.authForTenant(tenantB) }, 'real', real.client);
+            await testFn(
+                { root: realAuth, a: realTenantManager.authForTenant(tenantA), b: realTenantManager.authForTenant(tenantB), unknown: realTenantManager.authForTenant(UNKNOWN_TENANT) },
+                'real',
+                real.client,
+            );
         }
     }
 
@@ -1110,6 +1126,52 @@ describe('Auth Stub Compatibility - Integration Test', { timeout: realModeRuns ?
     describe('tenants', () => {
         const mismatchingTenant = { code: 'auth/mismatching-tenant-id', message: 'User tenant ID does not match with the current TenantAwareAuth tenant ID.' };
         const FIVE_MINUTES = 5 * 60 * 1000;
+
+        it('refuses a tenant the project does not have, except for a custom token, which is signed locally', async () => {
+            await testAllTenantImplementations(async ({ a, unknown }, mode, client) => {
+                await a.createUser({ uid: 'member', email: 'member@example.com', password: 'secret1' });
+                const idToken = await signInToPool(client, a, 'member');
+                const customToken = await unknown.createCustomToken('member');
+                expect(jwtPayload(customToken).tenant_id, `custom token (${mode})`).toBe(UNKNOWN_TENANT);
+
+                if (mode === 'emulator') {
+                    // The emulator creates a tenant the first time it is used, so it refuses nothing
+                    await expect(unknown.getUser('member'), `getUser (${mode})`).rejects.toMatchObject({ code: 'auth/user-not-found' });
+                    return;
+                }
+                // The Admin SDK maps Firebase's INVALID_TENANT_ID to no code of its own
+                const refused = {
+                    code: 'auth/internal-error',
+                    message:
+                        'An internal error has occurred. Raw server response: "{"error":{"code":400,"message":"INVALID_TENANT_ID","errors":[{"message":"INVALID_TENANT_ID","domain":"global","reason":"invalid"}]}}"',
+                };
+                await expect(unknown.createUser({ email: 'member@example.com', password: 'secret1' }), `createUser (${mode})`).rejects.toMatchObject(refused);
+                await expect(unknown.getUser('member'), `getUser (${mode})`).rejects.toMatchObject(refused);
+                await expect(unknown.getUserByEmail('member@example.com'), `getUserByEmail (${mode})`).rejects.toMatchObject(refused);
+                await expect(unknown.listUsers(10), `listUsers (${mode})`).rejects.toMatchObject(refused);
+                await expect(unknown.generatePasswordResetLink('member@example.com'), `reset link (${mode})`).rejects.toMatchObject(refused);
+                // The user lookup checkRevoked makes is refused before the token's tenant is compared
+                await expect(unknown.verifyIdToken(idToken, true), `verifyIdToken checkRevoked (${mode})`).rejects.toMatchObject(refused);
+
+                await expectIdentityToolkitError(
+                    client.signInWithPassword({ email: 'member@example.com', password: 'secret1', returnSecureToken: true, tenantId: UNKNOWN_TENANT }),
+                    'INVALID_TENANT_ID',
+                    `password sign-in (${mode})`,
+                );
+                await expectIdentityToolkitError(
+                    client.signInWithCustomToken({ token: customToken, returnSecureToken: true, tenantId: UNKNOWN_TENANT }),
+                    'INVALID_TENANT_ID',
+                    `custom token sign-in (${mode})`,
+                );
+                await expectIdentityToolkitError(
+                    client.signInWithCustomToken({ token: 'garbage', returnSecureToken: true, tenantId: UNKNOWN_TENANT }),
+                    'INVALID_TENANT_ID',
+                    `garbage token sign-in (${mode})`,
+                );
+                await expectIdentityToolkitError(client.resetPassword({ oobCode: 'none', tenantId: UNKNOWN_TENANT }), 'INVALID_TENANT_ID', `resetPassword (${mode})`);
+                await expectIdentityToolkitError(client.applyActionCode({ oobCode: 'none', tenantId: UNKNOWN_TENANT }), 'INVALID_TENANT_ID', `applyActionCode (${mode})`);
+            });
+        });
 
         it('keeps the same email in each pool as a separate account with its own password', async () => {
             await testAllTenantImplementations(async ({ root, a, b }, mode, client) => {

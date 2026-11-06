@@ -39,6 +39,7 @@
   "scripts": {
     "build": "npm run build:check && tsup",
     "build:check": "tsc --noEmit",
+    "prepublishOnly": "npm run build",
     "watch": "tsup --watch",
     "clean": "rm -rf dist",
     "super-clean": "npm run clean && rm -rf node_modules",

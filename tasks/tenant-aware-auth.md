@@ -97,6 +97,10 @@ invite journey; this task does not implement or deploy those changes.
   field) on `signInWithPassword`, `signInWithCustomToken`, `resetPassword` and
   `applyActionCode`. A third-party `IAuthClient` implementation still compiles
   but ignores the field.
+- A `StubAuth`'s tenants are declared when it is made, as a real project's are
+  created: `new StubAuth({ tenants: { 'tenant-a': {}, ... } })`, each with its own
+  `emailEnumerationProtection`. A tenant not declared is refused as real Firebase
+  refuses one the project does not have (see below).
 - `StubAuth.tenantManager().authForTenant(id)` returns `StubTenantAwareAuth`:
   its own pool, with `seedUser`, `issueIdToken`, `issueActionCode`, `failNext`
   and `remainingFailures`; `advanceClock` and `clear` on `StubAuth` cover every
@@ -133,14 +137,18 @@ From real Firebase (project `fir-simulator-test`, tenants `tenant-1` and
   another tenant, or a tenant's token with no `tenantId`, gets
   `TENANT_ID_MISMATCH : Specified tenant ID does not match the custom token.`.
   The stub follows this.
+- A tenant the project does not have (probed with a well-formed and a malformed
+  ID): every Admin call that reaches the server is `auth/internal-error` with the
+  raw response `INVALID_TENANT_ID`; `createCustomToken`, signed locally, succeeds.
+  Every REST call naming it is 400 `INVALID_TENANT_ID`, before the token or code
+  is looked at. The stub follows this, and the shared contract checks it.
 - The emulator differs: it creates tenants on first use, checks the tenant
   before the form, answers both cases above with a bare `TENANT_ID_MISMATCH`,
   signs a tenant's token in to the project pool when no tenant is named, and
   gives its tenants the project's email privacy setting.
 
 Still unverified against real Firebase: project-level `createSessionCookie` with
-a tenant's ID token (the stub routes it to the tenant, as the emulator does), and
-whether real Identity Platform refuses an unknown tenant (the stub does not).
+a tenant's ID token (the stub routes it to the tenant, as the emulator does).
 
 ### Verification run, 6 November 2026
 

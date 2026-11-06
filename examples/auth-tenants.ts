@@ -12,8 +12,9 @@ async function signInToTenant(tenants: ITenantManager, client: IAuthClient, tena
 }
 
 async function main() {
-    // In production: createTenantManager(getAuth().tenantManager()) and createAuthClient(...)
-    const auth = new StubAuth({ projectId: 'my-project' });
+    // In production: createTenantManager(getAuth().tenantManager()) and createAuthClient(...).
+    // The stub's tenants are declared, as a real project's are created; any other tenant is refused.
+    const auth = new StubAuth({ projectId: 'my-project', tenants: { 'red-tenant': {}, 'blue-tenant': { emailEnumerationProtection: true } } });
     const tenants = auth.tenantManager();
     const client = auth.client();
 
@@ -34,6 +35,9 @@ async function main() {
     const oobCode = red.issueActionCode('alice@example.com', 'PASSWORD_RESET');
     await client.resetPassword({ oobCode, newPassword: 'new-red-password', tenantId: 'red-tenant' });
     console.log('Blue password still works:', await signInToTenant(tenants, client, 'blue-tenant', 'alice@example.com', 'blue-password'));
+
+    // A tenant the project does not have is refused, as Firebase refuses it
+    await tenants.authForTenant('green-tenant').getUser('anyone').catch((error: { code: string; }) => console.log('Unknown tenant:', error.code));
 
     // Clean up every pool between tests
     auth.clear();

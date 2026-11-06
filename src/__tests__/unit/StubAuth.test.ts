@@ -5,8 +5,10 @@ import { StubAuth, StubAuthError } from '../../StubAuth';
 describe('StubAuth', () => {
     let auth: StubAuth;
 
+    const TENANTS = { 'tenant-a': {}, 'tenant-b': {} };
+
     beforeEach(() => {
-        auth = new StubAuth();
+        auth = new StubAuth({ tenants: TENANTS });
     });
 
     describe('seedUser', () => {
@@ -216,7 +218,7 @@ describe('StubAuth', () => {
         });
 
         it('follows the options for the project pool and each tenant', async () => {
-            const configured = new StubAuth({ emailEnumerationProtection: false, tenantEmailEnumerationProtection: { 'tenant-a': true } });
+            const configured = new StubAuth({ emailEnumerationProtection: false, tenants: { 'tenant-a': { emailEnumerationProtection: true } } });
             configured.seedUser({ uid: 'root', email: 'member@example.com', password: 'secret1' });
             const tenantA = configured.tenantManager().authForTenant('tenant-a');
             tenantA.seedUser({ uid: 'a', email: 'member@example.com', password: 'secret1' });
@@ -255,6 +257,50 @@ describe('StubAuth', () => {
             );
         });
 
+        it('refuses a tenant it was not made with, as Firebase refuses a tenant the project does not have', async () => {
+            const unknown = auth.tenantManager().authForTenant('tenant-z');
+            const known = auth.tenantManager().authForTenant('tenant-a');
+            known.seedUser({ uid: 'member', email: 'member@example.com', password: 'secret1' });
+            const idToken = known.issueIdToken('member');
+            const notFound = {
+                code: 'auth/internal-error',
+                message:
+                    'An internal error has occurred. Raw server response: "{"error":{"code":400,"message":"INVALID_TENANT_ID","errors":[{"message":"INVALID_TENANT_ID","domain":"global","reason":"invalid"}]}}"',
+            };
+
+            expect(unknown.tenantId).toBe('tenant-z');
+            await expect(unknown.createUser({ email: 'member@example.com', password: 'secret1' })).rejects.toMatchObject(notFound);
+            await expect(unknown.getUser('member')).rejects.toMatchObject(notFound);
+            await expect(unknown.getUserByEmail('member@example.com')).rejects.toMatchObject(notFound);
+            await expect(unknown.getUsers([{ uid: 'member' }])).rejects.toMatchObject(notFound);
+            await expect(unknown.updateUser('member', { displayName: 'x' })).rejects.toMatchObject(notFound);
+            await expect(unknown.listUsers()).rejects.toMatchObject(notFound);
+            await expect(unknown.deleteUser('member')).rejects.toMatchObject(notFound);
+            await expect(unknown.revokeRefreshTokens('member')).rejects.toMatchObject(notFound);
+            await expect(unknown.generatePasswordResetLink('member@example.com')).rejects.toMatchObject(notFound);
+            await expect(unknown.generateEmailVerificationLink('member@example.com')).rejects.toMatchObject(notFound);
+            await expect(unknown.generateVerifyAndChangeEmailLink('member@example.com', 'new@example.com')).rejects.toMatchObject(notFound);
+            // As the Admin SDK: the lookup checkRevoked makes reaches the server, and is refused before the tenant is compared
+            await expect(unknown.verifyIdToken(idToken, true)).rejects.toMatchObject(notFound);
+            await expect(unknown.verifyIdToken(idToken)).rejects.toMatchObject({ code: 'auth/mismatching-tenant-id' });
+            expect(() => unknown.seedUser({ uid: 'member' })).toThrow(expect.objectContaining(notFound));
+            expect(() => unknown.issueIdToken('member')).toThrow(expect.objectContaining(notFound));
+
+            // As the Admin SDK: a custom token is signed locally, and Firebase then refuses the sign-in
+            const customToken = await unknown.createCustomToken('member');
+            for (
+                const call of [
+                    auth.client().signInWithCustomToken({ token: customToken, returnSecureToken: true, tenantId: 'tenant-z' }),
+                    auth.client().signInWithCustomToken({ token: 'garbage', returnSecureToken: true, tenantId: 'tenant-z' }),
+                    auth.client().signInWithPassword({ email: 'member@example.com', password: 'secret1', returnSecureToken: true, tenantId: 'tenant-z' }),
+                    auth.client().resetPassword({ oobCode: 'none', tenantId: 'tenant-z' }),
+                    auth.client().applyActionCode({ oobCode: 'none', tenantId: 'tenant-z' }),
+                ]
+            ) {
+                await expect(call).rejects.toMatchObject({ status: 400, reason: 'INVALID_TENANT_ID', message: 'INVALID_TENANT_ID' });
+            }
+        });
+
         it('reaches the same pool each time a tenant is asked for', async () => {
             auth.tenantManager().authForTenant('tenant-a').seedUser({ uid: 'kept', email: 'kept@example.com' });
 
@@ -266,7 +312,7 @@ describe('StubAuth', () => {
         });
 
         it('keeps two simulators apart: their tenants share neither accounts nor tokens', async () => {
-            const other = new StubAuth();
+            const other = new StubAuth({ tenants: TENANTS });
             const ours = auth.tenantManager().authForTenant('tenant-a');
             const theirs = other.tenantManager().authForTenant('tenant-a');
             ours.seedUser({ uid: 'member', email: 'member@example.com', password: 'secret1' });

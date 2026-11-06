@@ -41,10 +41,16 @@ export interface StubAuthOptions {
      */
     emailEnumerationProtection?: boolean;
     /**
-     * The tenants with email enumeration protection, by tenant ID. A tenant not listed has it off,
-     * as a new tenant does.
+     * The project's Identity Platform tenants, by tenant ID, as they would be created in the project.
+     * As in Firebase, a tenant not listed does not exist: its operations are refused with `INVALID_TENANT_ID`.
      */
-    tenantEmailEnumerationProtection?: Readonly<Record<string, boolean>>;
+    tenants?: Readonly<Record<string, StubTenantOptions>>;
+}
+
+/** One tenant of a `StubAuth` */
+export interface StubTenantOptions {
+    /** Whether the tenant's pool has email enumeration protection. Defaults to false, as for a new tenant. */
+    emailEnumerationProtection?: boolean;
 }
 
 /** The operations `failNext` can make fail */
@@ -89,6 +95,15 @@ const INVALID_CUSTOM_TOKEN_FORMAT = 'INVALID_CUSTOM_TOKEN : Invalid assertion fo
 const CUSTOM_TOKEN_TENANT_MISMATCH = 'TENANT_ID_MISMATCH : Specified tenant ID does not match the custom token.';
 /** The Admin SDK's error when Firebase answers a link request without a link, as email enumeration protection does */
 const ACTION_LINK_WITHHELD = ['auth/internal-error', 'INTERNAL ASSERT FAILED: Unable to create the email action link'] as const;
+/** Firebase's answer to a request for a tenant the project does not have */
+const UNKNOWN_TENANT_REASON = 'INVALID_TENANT_ID';
+/** The Admin SDK's error for that answer, which it does not map to an error code of its own */
+const UNKNOWN_TENANT = [
+    'auth/internal-error',
+    `An internal error has occurred. Raw server response: "${
+        JSON.stringify({ error: { code: 400, message: UNKNOWN_TENANT_REASON, errors: [{ message: UNKNOWN_TENANT_REASON, domain: 'global', reason: 'invalid' }] } })
+    }"`,
+] as const;
 const MIN_PASSWORD_LENGTH = 6;
 
 /** The `mode` an action link carries for each kind of code */
@@ -194,26 +209,29 @@ export class AuthPool {
 /** Not exported from the package */
 export class AuthAuthority {
     readonly rootPool: AuthPool;
-    /** As the emulator: a tenant's pool comes into being the first time the tenant is used */
-    private readonly tenantPools = new Map<string, AuthPool>();
+    /** The pools of the tenants the simulator was made with; no other tenant exists */
+    private readonly tenantPools: ReadonlyMap<string, AuthPool>;
     /** Signs the stub's tokens, standing in for Google's keys: only tokens this simulator issued verify */
     private readonly signingKey = randomBytes(32);
     /** How far the clock is ahead of the real one, by what `advanceClock` added */
     private clockOffsetMs = 0;
 
-    constructor(readonly projectId: string, private readonly tenantEmailEnumerationProtection: Readonly<Record<string, boolean>>, rootEmailEnumerationProtection: boolean) {
+    constructor(readonly projectId: string, tenants: Readonly<Record<string, StubTenantOptions>>, rootEmailEnumerationProtection: boolean) {
         this.rootPool = new AuthPool(undefined, rootEmailEnumerationProtection);
+        this.tenantPools = new Map(Object.entries(tenants).map(([tenantId, options]) => [tenantId, new AuthPool(tenantId, options.emailEnumerationProtection === true)]));
     }
 
-    pool(tenantId: string | undefined): AuthPool {
+    /** The pool a tenant ID names, or `undefined` for a tenant the project does not have */
+    findPool(tenantId: string | undefined): AuthPool | undefined {
         // As the emulator: a request without a tenant ID (or with an empty one) reaches the project's own pool
-        if (!tenantId) {
-            return this.rootPool;
-        }
-        let pool = this.tenantPools.get(tenantId);
+        return tenantId ? this.tenantPools.get(tenantId) : this.rootPool;
+    }
+
+    /** As Firebase: a REST request for a tenant the project does not have is refused before anything else */
+    private pool(tenantId: string | undefined): AuthPool {
+        const pool = this.findPool(tenantId);
         if (!pool) {
-            pool = new AuthPool(tenantId, this.tenantEmailEnumerationProtection[tenantId] === true);
-            this.tenantPools.set(tenantId, pool);
+            throw new IdentityToolkitError(400, UNKNOWN_TENANT_REASON);
         }
         return pool;
     }
@@ -431,11 +449,26 @@ export class AuthAuthority {
  */
 export abstract class StubPoolAuth implements IAuth {
     readonly #authority: AuthAuthority;
-    readonly #pool: AuthPool;
+    /** `undefined` for the project's own pool */
+    readonly #tenantId: string | undefined;
+    /** `undefined` for a tenant the project does not have */
+    readonly #existingPool: AuthPool | undefined;
 
-    protected constructor(authority: AuthAuthority, pool: AuthPool) {
+    protected constructor(authority: AuthAuthority, tenantId: string | undefined) {
         this.#authority = authority;
-        this.#pool = pool;
+        this.#tenantId = tenantId;
+        this.#existingPool = authority.findPool(tenantId);
+    }
+
+    /**
+     * As Firebase: every operation that reaches the server fails for a tenant the project does not
+     * have. `createCustomToken`, which the Admin SDK signs locally, does not.
+     */
+    get #pool(): AuthPool {
+        if (!this.#existingPool) {
+            throw new StubAuthError(...UNKNOWN_TENANT);
+        }
+        return this.#existingPool;
     }
 
     async createUser(properties: CreateRequest): Promise<UserRecord> {
@@ -541,7 +574,7 @@ export abstract class StubPoolAuth implements IAuth {
             iss: CUSTOM_TOKEN_SIGNER,
             sub: CUSTOM_TOKEN_SIGNER,
             uid,
-            ...(this.#pool.tenantId === undefined ? {} : { tenant_id: this.#pool.tenantId }),
+            ...(this.#tenantId === undefined ? {} : { tenant_id: this.#tenantId }),
             ...(developerClaims === undefined ? {} : { claims: developerClaims }),
         });
     }
@@ -569,7 +602,10 @@ export abstract class StubPoolAuth implements IAuth {
             throw new StubAuthError(...INVALID_ID_TOKEN);
         }
         const tokenTenant = claims.firebase?.tenant;
-        const pool = typeof tokenTenant === 'string' ? this.#authority.pool(tokenTenant) : this.#pool;
+        const pool = typeof tokenTenant === 'string' ? this.#authority.findPool(tokenTenant) : this.#pool;
+        if (!pool) {
+            throw new StubAuthError(...UNKNOWN_TENANT);
+        }
         const user = pool.requireUser(claims.sub);
         if (user.disabled) {
             throw new StubAuthError(...USER_DISABLED);
@@ -671,8 +707,8 @@ export abstract class StubPoolAuth implements IAuth {
     /** A link of the form Firebase sends, carrying the code, and for a tenant the tenant ID */
     #actionLink(oobCode: string, requestType: ActionCodeRequestType): string {
         const query = new URLSearchParams({ mode: ACTION_LINK_MODES[requestType], oobCode, lang: 'en' });
-        if (this.#pool.tenantId !== undefined) {
-            query.set('tenantId', this.#pool.tenantId);
+        if (this.#tenantId !== undefined) {
+            query.set('tenantId', this.#tenantId);
         }
         return `https://${this.#authority.projectId}.firebaseapp.com/__/auth/action?${query}`;
     }
@@ -699,14 +735,14 @@ export abstract class StubPoolAuth implements IAuth {
             }
         }
         // As the Admin SDK: a tenant-aware instance refuses another pool's token; the project-level instance compares no tenant
-        if (this.#pool.tenantId !== undefined && claims.firebase?.tenant !== this.#pool.tenantId) {
+        if (this.#tenantId !== undefined && claims.firebase?.tenant !== this.#tenantId) {
             throw new StubAuthError(...MISMATCHING_TENANT_ID);
         }
         return { ...claims, uid: claims.sub } as unknown as DecodedIdToken;
     }
 
     #toRecord(user: StoredUser): UserRecord {
-        return toUserRecord(user, this.#pool.tenantId);
+        return toUserRecord(user, this.#tenantId);
     }
 
     #throwIfFailing(operation: FailableAuthOperation, uid: string): void {
@@ -723,13 +759,18 @@ export abstract class StubPoolAuth implements IAuth {
  * emails and action codes of its own pool, tokens carrying its tenant ID, and verification that
  * refuses a token or cookie of another pool with `auth/mismatching-tenant-id`. Obtained from
  * `StubAuth.tenantManager().authForTenant()`; it shares its `StubAuth`'s tokens and clock.
+ *
+ * For a tenant not in `StubAuthOptions.tenants`, as real Firebase answers for a tenant the project
+ * does not have: every operation but `createCustomToken` fails with `auth/internal-error` carrying
+ * `INVALID_TENANT_ID`, and so do the test controls. Verifying a token without `checkRevoked` never
+ * reaches the pool, so it fails with `auth/mismatching-tenant-id`.
  */
 export class StubTenantAwareAuth extends StubPoolAuth implements ITenantAwareAuth {
     readonly tenantId: string;
 
     /** Made by `StubAuth`; not exported for construction */
     constructor(authority: AuthAuthority, tenantId: string) {
-        super(authority, authority.pool(tenantId));
+        super(authority, tenantId);
         this.tenantId = tenantId;
     }
 
@@ -757,7 +798,10 @@ export class StubTenantManager implements ITenantManager {
         this.#authority = authority;
     }
 
-    /** As the emulator: an unknown tenant is not refused; its pool begins empty */
+    /**
+     * As the Admin SDK: any non-empty tenant ID gives an instance. For a tenant not in `StubAuthOptions.tenants`,
+     * as for one the real project does not have, its operations then fail (see `StubTenantAwareAuth`).
+     */
     authForTenant(tenantId: string): StubTenantAwareAuth {
         if (typeof tenantId !== 'string' || tenantId === '') {
             throw new StubAuthError(...INVALID_TENANT_ID);
@@ -783,8 +827,8 @@ export class StubAuth extends StubPoolAuth {
     readonly #tenants: StubTenantManager;
 
     constructor(options: StubAuthOptions = {}) {
-        const authority = new AuthAuthority(options.projectId ?? 'test-project', { ...options.tenantEmailEnumerationProtection }, options.emailEnumerationProtection ?? true);
-        super(authority, authority.rootPool);
+        const authority = new AuthAuthority(options.projectId ?? 'test-project', { ...options.tenants }, options.emailEnumerationProtection ?? true);
+        super(authority, undefined);
         this.#authority = authority;
         this.#tenants = new StubTenantManager(authority);
         this.#authClient = {
