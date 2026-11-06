@@ -1,7 +1,8 @@
 # Match StubAuth to real Firebase
 
-Requested 6 November 2026. Implemented and verified against the stub, real
-Firebase and the emulator; awaiting review and commit.
+Requested 6 November 2026. Implemented, verified against the stub, real Firebase
+and the emulator, and released in 0.15.0 with these breaking changes in its
+release notes. Complete.
 
 ## Issue
 

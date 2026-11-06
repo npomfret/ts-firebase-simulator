@@ -1,7 +1,8 @@
 # Model Identity Platform tenant-aware authentication
 
 Requested 5 November 2026. Implemented and verified against the stub, the Auth
-emulator and real Firebase, 6 November 2026. The release and the handoff remain.
+emulator and real Firebase, 6 November 2026. Released as 0.15.0 and handed off to
+bill splitter, 6 November 2026. Complete.
 
 ## Purpose
 
@@ -55,7 +56,7 @@ The downstream work is described in the bill splitter's
   against the stub and the real service, and the emulator where it supports the
   operation; document any emulator or real-service limitation rather than
   treating a stub-only pass as Firebase compatibility.
-- [ ] Update exported types, adapters, examples and documentation as required by
+- [x] Update exported types, adapters, examples and documentation as required by
   the final public interface. Explain compatibility and hand off the actual
   package version and supported operations to bill splitter after the user
   handles release. Do not publish as part of this task.
@@ -166,6 +167,15 @@ and the emulator, were:
   SDK's no-`checkRevoked` path are stub-only: the emulator neither signs tokens
   nor lets the SDK skip the user lookup.
 
-### Open
+### Shipped
 
-- Release by the user, then the handoff of the published version to bill splitter.
+- 0.15.0, published by the user on 6 November 2026, with release notes listing
+  the breaking changes:
+  <https://github.com/npomfret/ts-firebase-simulator/releases/tag/v0.15.0>.
+  CI was green on the released code (Build & Unit #156, Integration #151).
+- Handed off in bill splitter's `tasks/cross-tenant-group-invite-existing-account.md`
+  (its commit `cd16531ea`): the supported operations, how to declare tenants,
+  the evidence, and the `StubAuth` changes its upgrade will bring.
+- Remaining risk: project-level `createSessionCookie` with a tenant's ID token is
+  unverified against real Firebase; real-mode CI and local runs share one test
+  project and delete each other's accounts if they overlap.
