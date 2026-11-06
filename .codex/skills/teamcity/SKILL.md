@@ -228,12 +228,19 @@ features {
 - **Each project owns its simulators.** Never share a device with another
   project, and pin the OS in the destination.
 - **Isolate DerivedData and temp output** under the build's temp dir.
-- **One simulator lock, server-wide.** Every leg that boots a simulator takes
-  `readLock("ios_simulator")`. That resource is defined once, on the server's
-  Root project, and its quota (2) caps how many simulator legs run at once
-  across every project. A write lock would take the whole quota. Never define it in a project, and never add a
-  per-project Xcode lock. A leg that boots no simulator, such as a compile, an
-  archive, `swift test`, a Mac-only leg or checks, takes no lock.
+- **Two server-wide locks, both defined once on the server's Root project.**
+  Never define either in a project, and never add a per-project Xcode lock.
+  - `ios_simulator` (quota 2) caps how many simulators boot at once across
+    every project. Every leg that boots a simulator takes
+    `readLock("ios_simulator")`.
+  - `high_cpu` (quota 2) caps how many heavy legs run at once across every
+    project. Every leg that boots a simulator or drives a real browser takes
+    `readLock("high_cpu")`; nothing else does. Compiles, archives, delivery and
+    Ship legs, `swift test`, Docker suites, unit suites and composites take
+    neither lock unless they boot a simulator or drive a browser. A leg takes
+    `writeLock("high_cpu")` only when it must run alone, with the reason in a
+    comment beside it: a write lock waits for every reader and blocks all new
+    ones, so it stalls the whole estate.
 - **Delivery builds the revision that passed.** `TestFlight Delivery` takes a
   snapshot dependency on `All Checks` and never commits, pulls or rebases.
   Submitting for App Review stays manual.
