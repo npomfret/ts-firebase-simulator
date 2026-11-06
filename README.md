@@ -194,7 +194,7 @@ interface IAuthClient {
 }
 ```
 
-A custom token minted for one tenant, or for the project, is refused in another tenant's sign-in with `TENANT_ID_MISMATCH`. An action code works only in the pool it was issued in: elsewhere it is `INVALID_OOB_CODE`.
+A custom token minted for one tenant is refused in another tenant's sign-in, or in a sign-in naming no tenant, with `TENANT_ID_MISMATCH`. A project's custom token is refused in a tenant's sign-in with HTTP 500 `Internal error encountered.`, as Firebase answers it. An action code works only in the pool it was issued in: elsewhere it is `INVALID_OOB_CODE`.
 
 ## Stub Features
 
@@ -229,17 +229,18 @@ In-memory Firebase Storage:
 
 ### StubAuth
 
-In-memory Firebase Auth for one project, behaving as the Auth emulator does:
+In-memory Firebase Auth for one project, behaving as real Firebase does. Its behaviour is checked against a real project, and where the Auth emulator differs, the stub follows Firebase:
 - User management, with Firebase's errors (`auth/user-not-found`, `auth/email-already-exists`, ...) and limits
 - ID tokens, custom tokens and session cookies as signed JWTs that only the same `StubAuth` verifies; expiry and revocation
 - `client()`: an `IAuthClient` over the same users and tenants, for password and custom-token sign-in and action codes
 - Action codes (password reset, email verification, email change), each usable once
+- Email enumeration protection, per pool: on for the project's pool unless `emailEnumerationProtection: false`, and off for a tenant unless `tenantEmailEnumerationProtection` names it. With it on, an unknown email, a wrong password and an account without one are all `INVALID_LOGIN_CREDENTIALS`, and a link that would reveal whether an email has an account is withheld (`auth/internal-error`), as Firebase does
 - `tenantManager().authForTenant(id)`: a `StubTenantAwareAuth` over that tenant's own pool, sharing the `StubAuth`'s tokens and clock. As in the emulator, a tenant needs no creating: its pool starts empty on first use
 - Test utilities (`seedUser()`, `issueIdToken()`, `issueActionCode()`, `failNext()`, `remainingFailures()`, on `StubAuth` for the project's pool and on each `StubTenantAwareAuth` for its own; `advanceClock()` and `clear()` on `StubAuth`, for every pool)
 
 Two `StubAuth` instances share nothing: neither accounts nor signing keys.
 
-Not simulated: input validation (malformed email, short password at creation), custom claims, action code expiry, `actionCodeSettings`, rate limiting, and email enumeration protection (real projects answer both a wrong password and an unknown email with `INVALID_LOGIN_CREDENTIALS`; the emulator and the stub do not). Tenants are not managed (no `createTenant` or tenant configuration), and an unknown tenant is not refused. The tenant behaviour is checked against the Admin SDK and the Auth emulator, not against a real multi-tenant project.
+Not simulated: input validation (malformed email, short password at creation), custom claims, action code expiry, `actionCodeSettings`, the `apiKey` in action links, and rate limiting (real Firebase may refuse several quick links for one email with `TOO_MANY_ATTEMPTS_TRY_LATER`). Tenants are not managed (no `createTenant` or tenant configuration), and an unknown tenant is not refused, as in the emulator.
 
 ## Production Wrappers
 

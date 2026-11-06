@@ -135,7 +135,11 @@ Cloud Tasks does **not** have an official Firebase emulator. When running in emu
 
 ### Auth Note
 
-Auth tests run against the stub and the emulator only; there is no real-Firebase mode. Running them against a real project would create real accounts, and would need a web API key and the Email/Password provider enabled. The emulators run as the project `demo-test-project`, so the Admin SDK and the REST client reach the same accounts. The tenant tests use the tenants `tenant-a` and `tenant-b`, which the emulator creates on first use; a real-Firebase run of them would also need Identity Platform multi-tenancy enabled on the project.
+Auth tests run against the stub, and then against either the emulator or real Firebase, never both. The Admin SDK sends every app's Auth calls to the emulator while `FIREBASE_AUTH_EMULATOR_HOST` is set, so `npm run test:with-emulator` runs the emulator's mode and `npm run test:integration` the real one. The tests assert real Firebase's behaviour, and say where the emulator differs.
+
+The emulators run as the project `demo-test-project`, so the Admin SDK and the REST client reach the same accounts. The tests turn on its email enumeration protection, and use the tenants `tenant-a` and `tenant-b`, which the emulator creates on first use.
+
+The real mode **deletes every account** in the project and its tenants before each test, so use a project kept for testing. The project needs Identity Platform multi-tenancy, two tenants named `tenant-1` and `tenant-2`, Email/Password enabled in both tenants and in the project's own pool, and a web app whose API key the tests read with the service account. See [docs/identity-platform-multi-tenancy-setup.md](docs/identity-platform-multi-tenancy-setup.md). Its tests have a 20 s limit, for real Firebase's latency. TeamCity's Integration build runs this real mode on every push and nightly, so a local real run at the same time will delete the build's accounts, and the build will delete the local run's.
 
 ## Commands
 

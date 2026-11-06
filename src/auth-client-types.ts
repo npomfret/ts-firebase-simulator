@@ -7,7 +7,10 @@
 export interface IAuthClient {
     /** `accounts:signInWithPassword`: the email is looked up in the tenant's users */
     signInWithPassword(request: { email: string; password: string; returnSecureToken: boolean; tenantId?: string; }): Promise<SignInWithPasswordResponse>;
-    /** `accounts:signInWithCustomToken`: with a `tenantId`, a token not minted for that tenant fails with `TENANT_ID_MISMATCH` */
+    /**
+     * `accounts:signInWithCustomToken`: a token minted for another tenant, or a tenant's token sent without
+     * its `tenantId`, fails with `TENANT_ID_MISMATCH`; a project's token sent with a `tenantId` fails with HTTP 500
+     */
     signInWithCustomToken(request: { token: string; returnSecureToken: true; tenantId?: string; }): Promise<SignInWithCustomTokenResponse>;
     /** `accounts:resetPassword`: without `newPassword` it reads a code of any type; with it, it uses a password-reset code */
     resetPassword(request: { oobCode: string; newPassword?: string; tenantId?: string; }): Promise<ResetPasswordResponse>;
@@ -19,6 +22,7 @@ export interface SignInWithPasswordResponse {
     localId: string;
     email: string;
     idToken?: string;
+    /** Only when `returnSecureToken` is true */
     refreshToken?: string;
     /** The ID token's lifetime in seconds, e.g. "3600" */
     expiresIn?: string;
@@ -46,6 +50,8 @@ export interface UpdateAccountResponse {
     localId: string;
     /** The account email, after any change the code made */
     email: string;
+    /** A VERIFY_AND_CHANGE_EMAIL code's new email */
+    newEmail?: string;
     emailVerified: boolean;
 }
 

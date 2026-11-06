@@ -1,7 +1,7 @@
 # Model Identity Platform tenant-aware authentication
 
-Requested 5 November 2026. Implemented and verified against the stub and the Auth
-emulator, 6 November 2026; the real-service run is blocked (see Tracking).
+Requested 5 November 2026. Implemented and verified against the stub, the Auth
+emulator and real Firebase, 6 November 2026. The release and the handoff remain.
 
 ## Purpose
 
@@ -48,7 +48,7 @@ The downstream work is described in the bill splitter's
   the current auth surface, including whether a code can be used under another
   tenant. Verify exact request fields, error codes and behaviour against Firebase
   before encoding them; do not guess missing semantics.
-- [ ] Add focused unit and compatibility tests covering same-email accounts with
+- [x] Add focused unit and compatibility tests covering same-email accounts with
   different passwords, wrong-pool authentication and verification, independent
   reset/action-code effects, revocation, session cookies, root-pool regression,
   and two independent simulator instances. Run applicable shared contracts
@@ -122,22 +122,31 @@ From the Admin SDK source (`firebase-admin` 13.5, `lib/auth/tenant-manager.js`,
   `checkRevoked` looks the uid up in the project pool (`auth/user-not-found` for a
   tenant-only uid).
 
-From the Auth emulator source (`firebase-tools` 15.28, `lib/emulator/auth`) and
-the shared contract run:
-- Tenant pools are created on first use; users, email uniqueness and oob codes
-  are per pool. An action code used in another pool, or the root pool, is
-  `INVALID_OOB_CODE`. A tenant's action links carry `tenantId`.
-- `signInWithCustomToken` with a `tenantId` refuses a token whose `tenant_id`
-  differs (including a project token) with `TENANT_ID_MISMATCH`, before format checks.
-- Project-level `createSessionCookie` with a tenant's ID token is routed to that
-  tenant's pool. Encoded in the stub, not covered by a shared test.
+From real Firebase (project `fir-simulator-test`, tenants `tenant-1` and
+`tenant-2`), through the shared contract run and a probe recorded in
+`tasks/match-stub-auth-to-real-firebase.md`:
+- Users, email uniqueness and action codes are per pool. An action code used in
+  another pool, or the project pool, is `INVALID_OOB_CODE`. A tenant's action
+  links carry `tenantId`.
+- Custom-token sign-in checks the token's form first. In a tenant, a token
+  without `tenant_id` gets HTTP 500 `Internal error encountered.`. A token for
+  another tenant, or a tenant's token with no `tenantId`, gets
+  `TENANT_ID_MISMATCH : Specified tenant ID does not match the custom token.`.
+  The stub follows this.
+- The emulator differs: it creates tenants on first use, checks the tenant
+  before the form, answers both cases above with a bare `TENANT_ID_MISMATCH`,
+  signs a tenant's token in to the project pool when no tenant is named, and
+  gives its tenants the project's email privacy setting.
 
-Not verified against real Firebase (no multi-tenant project available):
-custom-token sign-in without `tenantId` for a tenant's token (the emulator signs
-it in to the project pool, and so does the stub), project-level session-cookie
-routing, link format, and whether real Identity Platform rejects an unknown tenant.
+Still unverified against real Firebase: project-level `createSessionCookie` with
+a tenant's ID token (the stub routes it to the tenant, as the emulator does), and
+whether real Identity Platform refuses an unknown tenant (the stub does not).
 
 ### Verification run, 6 November 2026
+
+The real-Firebase run, and the stub changes it led to, are tracked in
+`tasks/match-stub-auth-to-real-firebase.md`. The first runs, against the stub
+and the emulator, were:
 
 - `npx vitest run src/__tests__/unit/StubAuth.test.ts`: 27 passed (8 new tenant tests).
 - `npx firebase emulators:exec --only auth --project demo-test-project 'npx vitest run src/__tests__/integration/auth-compatibility.test.ts'`:
@@ -151,9 +160,4 @@ routing, link format, and whether real Identity Platform rejects an unknown tena
 
 ### Open
 
-- Real-service run, blocked: project `fir-simulator-test` answers
-  `listTenants` with `auth/invalid-project-id … didn't enable multi-tenancy`.
-  It needs Identity Platform with multi-tenancy (billing), a web API key, two
-  tenants with Email/Password, and a decision to let auth tests create real
-  accounts (today's suite deliberately has no real mode).
 - Release by the user, then the handoff of the published version to bill splitter.

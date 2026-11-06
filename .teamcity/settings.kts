@@ -127,9 +127,10 @@ val integration = BuildType {
     name = "Integration"
     description = "The compatibility suites against the real Firebase project " +
         "fir-simulator-test: every assertion is made against the stub and against live " +
-        "Firestore and Storage, so a divergence between them fails here. Signed URLs are " +
-        "covered on this leg and cannot be covered on the emulator one, which has no key " +
-        "to sign with."
+        "Firestore, Storage and Auth (the project's pool and its tenants tenant-1 and " +
+        "tenant-2), so a divergence between them fails here. The Auth suite deletes every " +
+        "account in those pools before each test. Signed URLs are covered on this leg and " +
+        "cannot be covered on the emulator one, which has no key to sign with."
     onTheMac("ts-firebase-simulator-integration")
     keepsWhatVitestSaid("integration.xml")
     params {
@@ -164,8 +165,9 @@ val integration = BuildType {
         }
     }
     failureConditions {
-        // The suite takes about a minute against live Firebase; the margin is for
-        // a slow day on the API rather than for it growing tenfold.
+        // Firestore and Storage take about a minute against live Firebase, and Auth
+        // about 3.5 minutes more (measured locally, 6 November 2026); the margin is
+        // for a slow day on the API rather than for the suite growing fourfold.
         executionTimeoutMin = 20
     }
     onPushAndNightly(atMinute = 45)

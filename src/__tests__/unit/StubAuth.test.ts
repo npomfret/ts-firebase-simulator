@@ -190,12 +190,47 @@ describe('StubAuth', () => {
             const oobCode = auth.issueActionCode('Issued@Example.com', 'VERIFY_AND_CHANGE_EMAIL', 'Changed@Example.com');
 
             await expect(auth.client().resetPassword({ oobCode })).resolves.toEqual({ requestType: 'VERIFY_AND_CHANGE_EMAIL', email: 'issued@example.com', newEmail: 'changed@example.com' });
-            await expect(auth.client().applyActionCode({ oobCode })).resolves.toEqual({ localId: 'issued', email: 'changed@example.com', emailVerified: true });
+            await expect(auth.client().applyActionCode({ oobCode })).resolves.toEqual({ localId: 'issued', email: 'changed@example.com', newEmail: 'changed@example.com', emailVerified: true });
         });
 
         it('refuses to issue an action code for an unknown email, as the links refuse it', () => {
-            expect(() => auth.issueActionCode('nobody@example.com', 'PASSWORD_RESET')).toThrow(expect.objectContaining({ code: 'auth/email-not-found' }));
+            const unprotected = new StubAuth({ emailEnumerationProtection: false });
+
+            expect(() => auth.issueActionCode('nobody@example.com', 'PASSWORD_RESET')).toThrow(expect.objectContaining({ code: 'auth/internal-error' }));
+            expect(() => unprotected.issueActionCode('nobody@example.com', 'PASSWORD_RESET')).toThrow(expect.objectContaining({ code: 'auth/email-not-found' }));
             expect(() => auth.issueActionCode('nobody@example.com', 'VERIFY_EMAIL')).toThrow(expect.objectContaining({ code: 'auth/user-not-found' }));
+        });
+    });
+
+    describe('email enumeration protection', () => {
+        const signIn = (stub: StubAuth, email: string, password: string, tenantId?: string) => stub.client().signInWithPassword({ email, password, returnSecureToken: true, tenantId });
+
+        it('is on for the project pool and off for tenants unless configured', async () => {
+            auth.seedUser({ uid: 'root', email: 'member@example.com', password: 'secret1' });
+            auth.tenantManager().authForTenant('tenant-a').seedUser({ uid: 'a', email: 'member@example.com', password: 'secret1' });
+
+            await expect(signIn(auth, 'member@example.com', 'wrong1')).rejects.toMatchObject({ message: 'INVALID_LOGIN_CREDENTIALS' });
+            await expect(signIn(auth, 'nobody@example.com', 'secret1')).rejects.toMatchObject({ message: 'INVALID_LOGIN_CREDENTIALS' });
+            await expect(signIn(auth, 'member@example.com', 'wrong1', 'tenant-a')).rejects.toMatchObject({ message: 'INVALID_PASSWORD' });
+            await expect(signIn(auth, 'nobody@example.com', 'secret1', 'tenant-a')).rejects.toMatchObject({ message: 'EMAIL_NOT_FOUND' });
+        });
+
+        it('follows the options for the project pool and each tenant', async () => {
+            const configured = new StubAuth({ emailEnumerationProtection: false, tenantEmailEnumerationProtection: { 'tenant-a': true } });
+            configured.seedUser({ uid: 'root', email: 'member@example.com', password: 'secret1' });
+            const tenantA = configured.tenantManager().authForTenant('tenant-a');
+            tenantA.seedUser({ uid: 'a', email: 'member@example.com', password: 'secret1' });
+            tenantA.seedUser({ uid: 'b', email: 'other@example.com' });
+
+            await expect(signIn(configured, 'member@example.com', 'wrong1')).rejects.toMatchObject({ message: 'INVALID_PASSWORD' });
+            await expect(signIn(configured, 'nobody@example.com', 'secret1')).rejects.toMatchObject({ message: 'EMAIL_NOT_FOUND' });
+            await expect(signIn(configured, 'member@example.com', 'wrong1', 'tenant-a')).rejects.toMatchObject({ message: 'INVALID_LOGIN_CREDENTIALS' });
+            await expect(tenantA.generatePasswordResetLink('nobody@example.com')).rejects.toMatchObject({ code: 'auth/internal-error' });
+            await expect(tenantA.generateVerifyAndChangeEmailLink('member@example.com', 'other@example.com')).rejects.toMatchObject({
+                code: 'auth/internal-error',
+                message: 'INTERNAL ASSERT FAILED: Unable to create the email action link',
+            });
+            await expect(configured.generatePasswordResetLink('nobody@example.com')).rejects.toMatchObject({ code: 'auth/email-not-found' });
         });
     });
 

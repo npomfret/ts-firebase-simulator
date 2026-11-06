@@ -6,30 +6,112 @@
  * 1. Stub (in-memory) - always runs
  * 2. Emulator - runs when FIREBASE_AUTH_EMULATOR_HOST is set
  *
- * There is no real-Firebase mode: it would create real accounts and needs a web
- * API key and the Email/Password provider enabled, and the tenant tests also need
- * Identity Platform multi-tenancy enabled on the project.
+ * 3. Real Firebase - runs when a service account is available and the Auth emulator
+ *    is not: the Admin SDK sends every app's Auth calls to the emulator while
+ *    FIREBASE_AUTH_EMULATOR_HOST is set, so `npm run test:integration` runs this
+ *    mode and `npm run test:with-emulator` the emulator's.
+ *
+ * Real mode deletes every account in the project and in its tenants before each
+ * test. The project needs Identity Platform multi-tenancy with two tenants named
+ * `tenant-1` and `tenant-2`, Email/Password enabled in each and in the project,
+ * and a web app, whose API key the REST client uses.
  *
  * Configuration:
  * - Stub: No configuration needed
  * - Emulator: Run `firebase emulators:start` or use `npm run test:with-emulator`
+ * - Real: Place service-account-key.json in the project root or set GOOGLE_APPLICATION_CREDENTIALS
  */
 
-import { getApps, initializeApp } from 'firebase-admin/app';
-import { getAuth, type UserRecord } from 'firebase-admin/auth';
+import { cert, getApps, initializeApp, type ServiceAccount } from 'firebase-admin/app';
+import { type Auth, getAuth, type UserRecord } from 'firebase-admin/auth';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import { createAuth, createAuthClient, createTenantManager, type IAuth, type IAuthClient, IdentityToolkitError, type ITenantAwareAuth, type ITenantManager, StubAuth } from 'ts-firebase-simulator';
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
-type TestMode = 'stub' | 'emulator';
+type TestMode = 'stub' | 'emulator' | 'real';
 
 const EMULATOR_PROJECT_ID = 'demo-test-project';
 const EMULATOR_APP_NAME = 'auth-emulator-app';
+const REAL_APP_NAME = 'auth-real-app';
+/** The display names of the real project's tenants; Identity Platform generates their IDs */
+const REAL_TENANT_NAMES = ['tenant-1', 'tenant-2'] as const;
 /** The emulator creates a tenant the first time it is used */
 const TENANT_A = 'tenant-a';
 const TENANT_B = 'tenant-b';
 
 function emulatorHost(): string | undefined {
     return process.env.FIREBASE_AUTH_EMULATOR_HOST;
+}
+
+function getServiceAccountPath(): string | null {
+    if (process.env.GOOGLE_APPLICATION_CREDENTIALS) {
+        return process.env.GOOGLE_APPLICATION_CREDENTIALS;
+    }
+    // __dirname is src/__tests__/integration, go up 3 levels to package root
+    const localPath = path.resolve(__dirname, '../../..', 'service-account-key.json');
+    return fs.existsSync(localPath) ? localPath : null;
+}
+
+/** The real project's Admin Auth, its tenants' IDs and a REST client with its web API key */
+interface RealProject {
+    projectId: string;
+    auth: Auth;
+    tenantIds: [string, string];
+    client: IAuthClient;
+}
+
+async function connectRealProject(serviceAccountPath: string): Promise<RealProject> {
+    const serviceAccount = JSON.parse(fs.readFileSync(serviceAccountPath, 'utf8')) as ServiceAccount & { project_id: string; };
+    const credential = cert(serviceAccount);
+    const app = getApps().find((existing) => existing.name === REAL_APP_NAME)
+        ?? initializeApp({ credential, projectId: serviceAccount.project_id }, REAL_APP_NAME);
+    const auth = getAuth(app);
+
+    const { tenants } = await auth.tenantManager().listTenants();
+    const tenantIds = REAL_TENANT_NAMES.map((name) => {
+        const tenant = tenants.find((candidate) => candidate.displayName === name);
+        if (!tenant) {
+            throw new Error(`Real project ${serviceAccount.project_id} has no tenant named ${name}; found ${tenants.map((t) => t.displayName).join(', ') || 'none'}`);
+        }
+        return tenant.tenantId;
+    }) as [string, string];
+
+    return {
+        projectId: serviceAccount.project_id,
+        auth,
+        tenantIds,
+        client: createAuthClient({ apiKey: await webApiKey(serviceAccount.project_id, credential), baseUrl: 'https://identitytoolkit.googleapis.com' }),
+    };
+}
+
+/** The API key of the project's first web app, from the Firebase Management API */
+async function webApiKey(projectId: string, credential: ReturnType<typeof cert>): Promise<string> {
+    const headers = { Authorization: `Bearer ${(await credential.getAccessToken()).access_token}` };
+    const appsResponse = await fetch(`https://firebase.googleapis.com/v1beta1/projects/${projectId}/webApps`, { headers });
+    const { apps } = (await appsResponse.json()) as { apps?: { name: string; }[]; };
+    if (!appsResponse.ok || !apps?.length) {
+        throw new Error(`Real project ${projectId} has no web app to take an API key from: HTTP ${appsResponse.status}`);
+    }
+    const configResponse = await fetch(`https://firebase.googleapis.com/v1beta1/${apps[0].name}/config`, { headers });
+    const { apiKey } = (await configResponse.json()) as { apiKey?: string; };
+    if (!configResponse.ok || !apiKey) {
+        throw new Error(`Reading the web app config of ${projectId} failed: HTTP ${configResponse.status}`);
+    }
+    return apiKey;
+}
+
+/** Deletes every account in the real project and its tenants */
+async function clearRealAccounts(real: RealProject): Promise<void> {
+    for (const auth of [real.auth, ...real.tenantIds.map((tenantId) => real.auth.tenantManager().authForTenant(tenantId))]) {
+        const { users } = await auth.listUsers(1000);
+        if (users.length > 0) {
+            const result = await auth.deleteUsers(users.map((user) => user.uid));
+            if (result.failureCount > 0) {
+                throw new Error(`Clearing real accounts failed: ${result.errors.map((e) => e.error.message).join('; ')}`);
+            }
+        }
+    }
 }
 
 function getEmulatorApp() {
@@ -56,6 +138,21 @@ async function clearEmulatorAccounts(): Promise<void> {
         if (!response.ok) {
             throw new Error(`Clearing emulator accounts at ${url} failed: HTTP ${response.status}`);
         }
+    }
+}
+
+/**
+ * Turns on email enumeration protection in the emulator's project, as the real project and the
+ * stub's project pool have it. The emulator's tenants take the project's setting.
+ */
+async function enableEmulatorEmailEnumerationProtection(): Promise<void> {
+    const response = await fetch(`http://${emulatorHost()}/emulator/v1/projects/${EMULATOR_PROJECT_ID}/config`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ emailPrivacyConfig: { enableImprovedEmailPrivacy: true } }),
+    });
+    if (!response.ok) {
+        throw new Error(`Configuring the emulator's email privacy failed: HTTP ${response.status}`);
     }
 }
 
@@ -89,19 +186,39 @@ function expectRecentUtcString(value: string | null | undefined, label: string):
     expect(Math.abs(Date.now() - Date.parse(value!)), label).toBeLessThan(5000);
 }
 
-describe('Auth Stub Compatibility - Integration Test', () => {
+/**
+ * Real Firebase answers each Auth call in about 200-400 ms, so a test making 20 to 30 of them took
+ * up to 9.1 s, and in an earlier run over 11.7 s, against the 10 s default (6 November 2026). The
+ * user approved a longer limit for that latency, for the real mode only: 20 s, about 1.7 times the
+ * worst seen. The stub and emulator modes keep the default.
+ */
+const REAL_FIREBASE_TEST_TIMEOUT_MS = 20_000;
+const realModeRuns = !process.env.FIREBASE_AUTH_EMULATOR_HOST && getServiceAccountPath() !== null;
+
+describe('Auth Stub Compatibility - Integration Test', { timeout: realModeRuns ? REAL_FIREBASE_TEST_TIMEOUT_MS : undefined }, () => {
     let stubAuth: StubAuth;
     let emulatorAuth: IAuth | null = null;
     let emulatorAuthClient: IAuthClient | null = null;
     let emulatorTenantManager: ITenantManager | null = null;
+    let real: RealProject | null = null;
+    let realAuth: IAuth | null = null;
+    let realTenantManager: ITenantManager | null = null;
     const emulatorAvailable = !!emulatorHost();
+    const serviceAccountPath = getServiceAccountPath();
+    const realAvailable = realModeRuns;
 
-    beforeAll(() => {
-        console.log(`Auth test modes: stub=yes, emulator=${emulatorAvailable ? 'yes' : 'no'}`);
+    beforeAll(async () => {
+        console.log(`Auth test modes: stub=yes, emulator=${emulatorAvailable ? 'yes' : 'no'}, real=${realAvailable ? 'yes' : 'no'}`);
         if (emulatorAvailable) {
             emulatorAuth = getEmulatorAuth();
             emulatorAuthClient = getEmulatorAuthClient();
             emulatorTenantManager = getEmulatorTenantManager();
+            await enableEmulatorEmailEnumerationProtection();
+        }
+        if (realAvailable) {
+            real = await connectRealProject(serviceAccountPath!);
+            realAuth = createAuth(real.auth);
+            realTenantManager = createTenantManager(real.auth.tenantManager());
         }
     });
 
@@ -110,11 +227,24 @@ describe('Auth Stub Compatibility - Integration Test', () => {
         if (emulatorAvailable) {
             await clearEmulatorAccounts();
         }
+        if (real) {
+            await clearRealAccounts(real);
+        }
     });
+
+    function projectIdOf(mode: TestMode): string {
+        return mode === 'real' ? real!.projectId : EMULATOR_PROJECT_ID;
+    }
 
     /** An ID token for the user, from a custom-token sign-in */
     async function signIn(auth: IAuth, mode: TestMode, uid: string): Promise<string> {
-        return mode === 'stub' ? stubAuth.issueIdToken(uid) : emulatorSignIn(auth, uid);
+        if (mode === 'stub') {
+            return stubAuth.issueIdToken(uid);
+        }
+        if (mode === 'emulator') {
+            return emulatorSignIn(auth, uid);
+        }
+        return (await real!.client.signInWithCustomToken({ token: await auth.createCustomToken(uid), returnSecureToken: true })).idToken;
     }
 
     /** Lets the clock pass into a later second, which revocation needs to tell tokens apart */
@@ -126,10 +256,17 @@ describe('Auth Stub Compatibility - Integration Test', () => {
         }
     }
 
+    /**
+     * Runs the test against each implementation. The tests assert real Firebase's behaviour, which
+     * the stub matches; where the emulator differs, the test says so with `mode === 'emulator'`.
+     */
     async function testAllImplementations(testFn: (auth: IAuth, mode: TestMode, client: IAuthClient) => Promise<void>) {
         await testFn(stubAuth, 'stub', stubAuth.client());
         if (emulatorAuth && emulatorAuthClient) {
             await testFn(emulatorAuth, 'emulator', emulatorAuthClient);
+        }
+        if (realAuth && real) {
+            await testFn(realAuth, 'real', real.client);
         }
     }
 
@@ -146,6 +283,10 @@ describe('Auth Stub Compatibility - Integration Test', () => {
         if (emulatorAuth && emulatorAuthClient && emulatorTenantManager) {
             await testFn({ root: emulatorAuth, a: emulatorTenantManager.authForTenant(TENANT_A), b: emulatorTenantManager.authForTenant(TENANT_B) }, 'emulator', emulatorAuthClient);
         }
+        if (realAuth && real && realTenantManager) {
+            const [tenantA, tenantB] = real.tenantIds;
+            await testFn({ root: realAuth, a: realTenantManager.authForTenant(tenantA), b: realTenantManager.authForTenant(tenantB) }, 'real', real.client);
+        }
     }
 
     /** An ID token for the pool's user, from a custom-token sign-in through the REST API in that pool */
@@ -154,11 +295,11 @@ describe('Auth Stub Compatibility - Integration Test', () => {
         return (await client.signInWithCustomToken({ token: await auth.createCustomToken(uid), returnSecureToken: true, tenantId })).idToken;
     }
 
-    /** Expects the call to fail as the REST API fails it: an IdentityToolkitError with HTTP 400 */
-    async function expectIdentityToolkitError(call: Promise<unknown>, message: string, label: string): Promise<void> {
+    /** Expects the call to fail as the REST API fails it: an IdentityToolkitError, by default with HTTP 400 */
+    async function expectIdentityToolkitError(call: Promise<unknown>, message: string, label: string, status = 400): Promise<void> {
         const error = await call.then(() => undefined, (thrown: unknown) => thrown);
         expect(error, label).toBeInstanceOf(IdentityToolkitError);
-        expect(error, label).toMatchObject({ status: 400, reason: message.split(' : ')[0], message });
+        expect(error, label).toMatchObject({ status, reason: message.split(' : ')[0], message });
     }
 
     describe('createUser', () => {
@@ -178,7 +319,8 @@ describe('Auth Stub Compatibility - Integration Test', () => {
                     { uid: 'alice@example.com', displayName: 'Alice', email: 'alice@example.com', providerId: 'password' },
                 ]);
                 expectRecentUtcString(user.metadata.creationTime, `creationTime (${mode})`);
-                expect(user.metadata.lastSignInTime, `lastSignInTime (${mode})`).toBe(user.metadata.creationTime);
+                // The emulator counts creating an account as its first sign-in
+                expect(user.metadata.lastSignInTime, `lastSignInTime (${mode})`).toBe(mode === 'emulator' ? user.metadata.creationTime : null);
                 expect(user.metadata.lastRefreshTime, `lastRefreshTime (${mode})`).toBeNull();
                 expectRecentUtcString(user.tokensValidAfterTime, `tokensValidAfterTime (${mode})`);
             });
@@ -197,6 +339,8 @@ describe('Auth Stub Compatibility - Integration Test', () => {
                     disabled: true,
                 });
 
+                const passwordProvider = { uid: 'full@example.com', displayName: 'Full', email: 'full@example.com', photoURL: 'https://example.com/full.png', providerId: 'password' };
+                const phoneProvider = { uid: '+15555550100', providerId: 'phone', phoneNumber: '+15555550100' };
                 const { metadata, tokensValidAfterTime, ...json } = user.toJSON() as Record<string, unknown>;
                 expect(json, `toJSON (${mode})`).toEqual({
                     uid: 'full-user',
@@ -206,10 +350,8 @@ describe('Auth Stub Compatibility - Integration Test', () => {
                     photoURL: 'https://example.com/full.png',
                     phoneNumber: '+15555550100',
                     disabled: true,
-                    providerData: [
-                        { uid: 'full@example.com', displayName: 'Full', email: 'full@example.com', photoURL: 'https://example.com/full.png', providerId: 'password' },
-                        { uid: '+15555550100', providerId: 'phone', phoneNumber: '+15555550100' },
-                    ],
+                    // The emulator lists the password provider first
+                    providerData: mode === 'emulator' ? [passwordProvider, phoneProvider] : [phoneProvider, passwordProvider],
                     // The emulator's fake hash; the stub keeps no hash
                     ...(mode === 'emulator' ? { passwordHash: expect.any(String), passwordSalt: expect.any(String) } : {}),
                 });
@@ -218,13 +360,18 @@ describe('Auth Stub Compatibility - Integration Test', () => {
             });
         });
 
-        it('gives a user without a password no provider and no tokensValidAfterTime', async () => {
+        it('gives a user without a password no provider, and every user a tokensValidAfterTime', async () => {
             await testAllImplementations(async (auth, mode) => {
                 const withEmail = await auth.createUser({ uid: 'email-only', email: 'email-only@example.com' });
                 const withPassword = await auth.createUser({ uid: 'password-only', password: 'secret1' });
 
                 expect(withEmail.providerData, `email only: providerData (${mode})`).toEqual([]);
-                expect(withEmail.tokensValidAfterTime, `email only: tokensValidAfterTime (${mode})`).toBeUndefined();
+                // The emulator gives an account tokensValidAfterTime only with a password
+                if (mode === 'emulator') {
+                    expect(withEmail.tokensValidAfterTime, `email only: tokensValidAfterTime (${mode})`).toBeUndefined();
+                } else {
+                    expectRecentUtcString(withEmail.tokensValidAfterTime, `email only: tokensValidAfterTime (${mode})`);
+                }
                 expect(withPassword.providerData, `password only: providerData (${mode})`).toEqual([]);
                 expect(withPassword.tokensValidAfterTime, `password only: tokensValidAfterTime (${mode})`).toEqual(expect.any(String));
             });
@@ -306,7 +453,7 @@ describe('Auth Stub Compatibility - Integration Test', () => {
     describe('updateUser', () => {
         it('changes the given properties and leaves the rest', async () => {
             await testAllImplementations(async (auth, mode) => {
-                await auth.createUser({ uid: 'updated', email: 'updated@example.com', displayName: 'Before', photoURL: 'https://example.com/before.png' });
+                const created = await auth.createUser({ uid: 'updated', email: 'updated@example.com', displayName: 'Before', photoURL: 'https://example.com/before.png' });
 
                 const user = await auth.updateUser('updated', { displayName: 'After', emailVerified: true, disabled: true });
 
@@ -315,7 +462,7 @@ describe('Auth Stub Compatibility - Integration Test', () => {
                 expect(user.disabled, `disabled (${mode})`).toBe(true);
                 expect(user.email, `email (${mode})`).toBe('updated@example.com');
                 expect(user.photoURL, `photoURL (${mode})`).toBe('https://example.com/before.png');
-                expect(user.tokensValidAfterTime, `tokensValidAfterTime (${mode})`).toBeUndefined();
+                expect(user.tokensValidAfterTime, `tokensValidAfterTime unchanged (${mode})`).toBe(created.tokensValidAfterTime);
                 expect(user.metadata.lastRefreshTime, `lastRefreshTime (${mode})`).toBeNull();
                 expect((await auth.getUser('updated')).toJSON(), `stored (${mode})`).toEqual(user.toJSON());
             });
@@ -348,7 +495,7 @@ describe('Auth Stub Compatibility - Integration Test', () => {
             });
         });
 
-        it('adds the password provider and refreshes the account when a password is set', async () => {
+        it('adds the password provider and revalidates tokens when a password is set', async () => {
             await testAllImplementations(async (auth, mode) => {
                 await auth.createUser({ uid: 'new-password', email: 'new-password@example.com' });
 
@@ -358,7 +505,12 @@ describe('Auth Stub Compatibility - Integration Test', () => {
                     { uid: 'new-password@example.com', email: 'new-password@example.com', providerId: 'password' },
                 ]);
                 expectRecentUtcString(user.tokensValidAfterTime, `tokensValidAfterTime (${mode})`);
-                expectRecentUtcString(user.metadata.lastRefreshTime, `lastRefreshTime (${mode})`);
+                // The emulator counts a new password as refreshing the account
+                if (mode === 'emulator') {
+                    expectRecentUtcString(user.metadata.lastRefreshTime, `lastRefreshTime (${mode})`);
+                } else {
+                    expect(user.metadata.lastRefreshTime, `lastRefreshTime (${mode})`).toBeNull();
+                }
             });
         });
 
@@ -467,8 +619,8 @@ describe('Auth Stub Compatibility - Integration Test', () => {
                     firebase: { identities: { email: ['claimed@example.com'], phone: ['+15555550102'] }, sign_in_provider: 'custom' },
                     iat: expect.any(Number),
                     exp: decoded.iat + 3600,
-                    aud: EMULATOR_PROJECT_ID,
-                    iss: `https://securetoken.google.com/${EMULATOR_PROJECT_ID}`,
+                    aud: projectIdOf(mode),
+                    iss: `https://securetoken.google.com/${projectIdOf(mode)}`,
                     sub: 'claimed',
                     uid: 'claimed',
                 });
@@ -482,7 +634,8 @@ describe('Auth Stub Compatibility - Integration Test', () => {
 
                 const decoded = await auth.verifyIdToken(await signIn(auth, mode, 'anonymous'), true);
 
-                expect(decoded.email_verified, `email_verified (${mode})`).toBe(false);
+                // The emulator gives every token email_verified; Firebase only an account with an email
+                expect(decoded.email_verified, `email_verified (${mode})`).toBe(mode === 'emulator' ? false : undefined);
                 expect(decoded.firebase, `firebase (${mode})`).toEqual({ identities: {}, sign_in_provider: 'custom' });
                 expect(decoded.email, `email (${mode})`).toBeUndefined();
             });
@@ -509,8 +662,10 @@ describe('Auth Stub Compatibility - Integration Test', () => {
                 const user = await auth.getUser('newcomer');
                 expect(user.email, `email (${mode})`).toBeUndefined();
                 expect(user.providerData, `providerData (${mode})`).toEqual([]);
-                expect(user.tokensValidAfterTime, `tokensValidAfterTime (${mode})`).toBeUndefined();
+                // The emulator gives an account tokensValidAfterTime only with a password
+                expect(user.tokensValidAfterTime, `tokensValidAfterTime (${mode})`).toBe(mode === 'emulator' ? undefined : user.metadata.creationTime);
                 expect(user.metadata.lastSignInTime, `lastSignInTime (${mode})`).toBe(user.metadata.creationTime);
+                expect(user.metadata.lastRefreshTime, `lastRefreshTime (${mode})`).toBe(user.metadata.creationTime);
             });
         });
 
@@ -526,8 +681,9 @@ describe('Auth Stub Compatibility - Integration Test', () => {
                 });
                 await expect(auth.verifyIdToken(cookie), `session cookie (${mode})`).rejects.toMatchObject({
                     code: 'auth/argument-error',
-                    message:
-                        `Firebase ID token has incorrect "iss" (issuer) claim. Expected "https://securetoken.google.com/${EMULATOR_PROJECT_ID}" but got "https://session.firebase.google.com/${EMULATOR_PROJECT_ID}". Make sure the ID token comes from the same Firebase project as the service account used to authenticate this SDK. See https://firebase.google.com/docs/auth/admin/verify-id-tokens for details on how to retrieve an ID token.`,
+                    message: `Firebase ID token has incorrect "iss" (issuer) claim. Expected "https://securetoken.google.com/${projectIdOf(mode)}" but got "https://session.firebase.google.com/${
+                        projectIdOf(mode)
+                    }". Make sure the ID token comes from the same Firebase project as the service account used to authenticate this SDK. See https://firebase.google.com/docs/auth/admin/verify-id-tokens for details on how to retrieve an ID token.`,
                 });
             });
         });
@@ -544,7 +700,7 @@ describe('Auth Stub Compatibility - Integration Test', () => {
                 expect(cookie, `claims (${mode})`).toEqual({
                     ...idToken,
                     auth_time: expect.any(Number),
-                    iss: `https://session.firebase.google.com/${EMULATOR_PROJECT_ID}`,
+                    iss: `https://session.firebase.google.com/${projectIdOf(mode)}`,
                     iat: expect.any(Number),
                     exp: cookie.iat + 600,
                 });
@@ -663,33 +819,44 @@ describe('Auth Stub Compatibility - Integration Test', () => {
             });
         });
 
-        it('signs in without asking for tokens, and returns them anyway, as the emulator does', async () => {
+        it('signs in without asking for tokens, and returns only an ID token', async () => {
             await testAllImplementations(async (auth, mode, client) => {
                 await auth.createUser({ uid: 'checker', email: 'checker@example.com', password: 'secret1' });
 
                 const response = await client.signInWithPassword({ email: 'checker@example.com', password: 'secret1', returnSecureToken: false });
 
                 expect(response, `response (${mode})`).toMatchObject({ localId: 'checker', email: 'checker@example.com', idToken: expect.any(String) });
+                // The emulator returns a refresh token whatever returnSecureToken asks for
+                expect(response.refreshToken, `refreshToken (${mode})`).toEqual(mode === 'emulator' ? expect.any(String) : undefined);
             });
         });
 
-        it('refuses a wrong password, and a user without one', async () => {
+        it('refuses a wrong password, and a user without one, without saying which', async () => {
             await testAllImplementations(async (auth, mode, client) => {
                 await auth.createUser({ uid: 'guarded', email: 'guarded@example.com', password: 'secret1' });
                 await auth.createUser({ uid: 'passwordless', email: 'passwordless@example.com' });
 
-                await expectIdentityToolkitError(client.signInWithPassword({ email: 'guarded@example.com', password: 'wrong1', returnSecureToken: true }), 'INVALID_PASSWORD', `wrong (${mode})`);
+                // The project pool has email enumeration protection
+                await expectIdentityToolkitError(
+                    client.signInWithPassword({ email: 'guarded@example.com', password: 'wrong1', returnSecureToken: true }),
+                    'INVALID_LOGIN_CREDENTIALS',
+                    `wrong (${mode})`,
+                );
                 await expectIdentityToolkitError(
                     client.signInWithPassword({ email: 'passwordless@example.com', password: 'secret1', returnSecureToken: true }),
-                    'INVALID_PASSWORD',
+                    'INVALID_LOGIN_CREDENTIALS',
                     `none (${mode})`,
                 );
             });
         });
 
-        it('refuses an unknown email', async () => {
+        it('refuses an unknown email as it refuses a wrong password', async () => {
             await testAllImplementations(async (_auth, mode, client) => {
-                await expectIdentityToolkitError(client.signInWithPassword({ email: 'nobody@example.com', password: 'secret1', returnSecureToken: true }), 'EMAIL_NOT_FOUND', `unknown (${mode})`);
+                await expectIdentityToolkitError(
+                    client.signInWithPassword({ email: 'nobody@example.com', password: 'secret1', returnSecureToken: true }),
+                    'INVALID_LOGIN_CREDENTIALS',
+                    `unknown (${mode})`,
+                );
             });
         });
 
@@ -724,10 +891,17 @@ describe('Auth Stub Compatibility - Integration Test', () => {
                 await auth.createUser({ uid: 'mistaken' });
                 const idToken = await signIn(auth, mode, 'mistaken');
 
-                await expectIdentityToolkitError(client.signInWithCustomToken({ token: 'garbage', returnSecureToken: true }), 'INVALID_CUSTOM_TOKEN : Invalid assertion format', `garbage (${mode})`);
+                // The emulator words both refusals differently
+                await expectIdentityToolkitError(
+                    client.signInWithCustomToken({ token: 'garbage', returnSecureToken: true }),
+                    mode === 'emulator' ? 'INVALID_CUSTOM_TOKEN : Invalid assertion format' : 'INVALID_CUSTOM_TOKEN : Invalid assertion format. 3 dot separated segments required.',
+                    `garbage (${mode})`,
+                );
                 await expectIdentityToolkitError(
                     client.signInWithCustomToken({ token: idToken, returnSecureToken: true }),
-                    `INVALID_CUSTOM_TOKEN : ((Invalid aud (audience): ${EMULATOR_PROJECT_ID} Note: Firebase ID Tokens / third-party tokens cannot be used with signInWithCustomToken.))`,
+                    mode === 'emulator'
+                        ? `INVALID_CUSTOM_TOKEN : ((Invalid aud (audience): ${projectIdOf(mode)} Note: Firebase ID Tokens / third-party tokens cannot be used with signInWithCustomToken.))`
+                        : 'INVALID_CUSTOM_TOKEN',
                     `ID token (${mode})`,
                 );
             });
@@ -784,10 +958,12 @@ describe('Auth Stub Compatibility - Integration Test', () => {
                 const resetCode = oobCodeOf(await auth.generatePasswordResetLink('mixed@example.com'));
 
                 await expectIdentityToolkitError(client.resetPassword({ oobCode: verifyCode, newPassword: 'secret2' }), 'INVALID_OOB_CODE', `verify code reset (${mode})`);
-                // The emulator does not implement applying a password-reset code; what real Firebase answers is not checked
-                const error = await client.applyActionCode({ oobCode: resetCode }).then(() => undefined, (thrown: unknown) => thrown);
-                expect(error, `reset code applied (${mode})`).toBeInstanceOf(IdentityToolkitError);
-                expect(error, `reset code applied (${mode})`).toMatchObject({ status: 501, reason: 'PASSWORD_RESET' });
+                // The emulator does not implement applying a password-reset code: it answers 501
+                if (mode === 'emulator') {
+                    await expectIdentityToolkitError(client.applyActionCode({ oobCode: resetCode }), 'PASSWORD_RESET', `reset code applied (${mode})`, 501);
+                } else {
+                    await expectIdentityToolkitError(client.applyActionCode({ oobCode: resetCode }), 'INVALID_OOB_CODE', `reset code applied (${mode})`);
+                }
 
                 await expect(client.resetPassword({ oobCode: verifyCode }), `verify code (${mode})`).resolves.toMatchObject({ requestType: 'VERIFY_EMAIL' });
                 await expect(client.resetPassword({ oobCode: resetCode }), `reset code (${mode})`).resolves.toMatchObject({ requestType: 'PASSWORD_RESET' });
@@ -796,7 +972,7 @@ describe('Auth Stub Compatibility - Integration Test', () => {
 
         it('verifies an email once, without revoking tokens', async () => {
             await testAllImplementations(async (auth, mode, client) => {
-                await auth.createUser({ uid: 'unverified', email: 'unverified@example.com' });
+                const created = await auth.createUser({ uid: 'unverified', email: 'unverified@example.com' });
                 const idToken = await signIn(auth, mode, 'unverified');
                 const link = await auth.generateEmailVerificationLink('Unverified@Example.com');
                 const oobCode = oobCodeOf(link);
@@ -810,13 +986,13 @@ describe('Auth Stub Compatibility - Integration Test', () => {
                 expect(applied, `applied (${mode})`).toMatchObject({ localId: 'unverified', email: 'unverified@example.com', emailVerified: true });
                 const user = await auth.getUser('unverified');
                 expect(user.emailVerified, `emailVerified (${mode})`).toBe(true);
-                expect(user.tokensValidAfterTime, `tokensValidAfterTime (${mode})`).toBeUndefined();
+                expect(user.tokensValidAfterTime, `tokensValidAfterTime unchanged (${mode})`).toBe(created.tokensValidAfterTime);
                 await expect(auth.verifyIdToken(idToken, true), `ID token (${mode})`).resolves.toMatchObject({ uid: 'unverified' });
                 await expectIdentityToolkitError(client.applyActionCode({ oobCode }), 'INVALID_OOB_CODE', `applied again (${mode})`);
             });
         });
 
-        it('changes the email once, verified and without revoking tokens', async () => {
+        it('changes the email once, verified, revoking earlier tokens', async () => {
             await testAllImplementations(async (auth, mode, client) => {
                 await auth.createUser({ uid: 'mover', email: 'mover@example.com' });
                 const idToken = await signIn(auth, mode, 'mover');
@@ -836,13 +1012,20 @@ describe('Auth Stub Compatibility - Integration Test', () => {
                 expect(applied, `applied (${mode})`).toMatchObject({ localId: 'mover', email: 'moved@example.com', emailVerified: true });
                 expect((await auth.getUserByEmail('moved@example.com')).uid, `new email (${mode})`).toBe('mover');
                 await expect(auth.getUserByEmail('mover@example.com'), `old email (${mode})`).rejects.toMatchObject({ code: 'auth/user-not-found' });
-                expect((await auth.getUser('mover')).tokensValidAfterTime, `tokensValidAfterTime (${mode})`).toBeUndefined();
-                await expect(auth.verifyIdToken(idToken, true), `ID token (${mode})`).resolves.toMatchObject({ uid: 'mover' });
+                // The emulator neither revokes tokens on an email change nor returns newEmail
+                if (mode === 'emulator') {
+                    expect((await auth.getUser('mover')).tokensValidAfterTime, `tokensValidAfterTime (${mode})`).toBeUndefined();
+                    await expect(auth.verifyIdToken(idToken, true), `ID token (${mode})`).resolves.toMatchObject({ uid: 'mover' });
+                } else {
+                    expect(applied.newEmail, `newEmail (${mode})`).toBe('moved@example.com');
+                    expectRecentUtcString((await auth.getUser('mover')).tokensValidAfterTime, `tokensValidAfterTime (${mode})`);
+                    await expect(auth.verifyIdToken(idToken, true), `ID token (${mode})`).rejects.toMatchObject({ code: 'auth/id-token-revoked' });
+                }
                 await expectIdentityToolkitError(client.applyActionCode({ oobCode }), 'INVALID_OOB_CODE', `applied again (${mode})`);
             });
         });
 
-        it('refuses an email change to an address taken meanwhile, using the code up', async () => {
+        it('refuses an email change to an address taken meanwhile, leaving the code usable', async () => {
             await testAllImplementations(async (auth, mode, client) => {
                 await auth.createUser({ uid: 'slow', email: 'slow@example.com' });
                 const oobCode = oobCodeOf(await auth.generateVerifyAndChangeEmailLink('slow@example.com', 'wanted@example.com'));
@@ -851,7 +1034,12 @@ describe('Auth Stub Compatibility - Integration Test', () => {
                 await expectIdentityToolkitError(client.applyActionCode({ oobCode }), 'EMAIL_EXISTS', `taken (${mode})`);
 
                 expect((await auth.getUser('slow')).email, `email (${mode})`).toBe('slow@example.com');
-                await expectIdentityToolkitError(client.resetPassword({ oobCode }), 'INVALID_OOB_CODE', `read after (${mode})`);
+                // The emulator uses the code up
+                if (mode === 'emulator') {
+                    await expectIdentityToolkitError(client.resetPassword({ oobCode }), 'INVALID_OOB_CODE', `read after (${mode})`);
+                } else {
+                    await expect(client.resetPassword({ oobCode }), `read after (${mode})`).resolves.toMatchObject({ requestType: 'VERIFY_AND_CHANGE_EMAIL', newEmail: 'wanted@example.com' });
+                }
             });
         });
 
@@ -863,8 +1051,10 @@ describe('Auth Stub Compatibility - Integration Test', () => {
 
                 await auth.updateUser('renamed', { email: 'after@example.com' });
 
-                await expectIdentityToolkitError(client.resetPassword({ oobCode: resetCode, newPassword: 'secret2' }), 'INVALID_OOB_CODE', `reset (${mode})`);
-                await expectIdentityToolkitError(client.applyActionCode({ oobCode: verifyCode }), 'INVALID_OOB_CODE', `verify (${mode})`);
+                // The emulator answers both as an invalid code
+                const emulator = mode === 'emulator';
+                await expectIdentityToolkitError(client.resetPassword({ oobCode: resetCode, newPassword: 'secret2' }), emulator ? 'INVALID_OOB_CODE' : 'USER_NOT_FOUND', `reset (${mode})`);
+                await expectIdentityToolkitError(client.applyActionCode({ oobCode: verifyCode }), emulator ? 'INVALID_OOB_CODE' : 'EMAIL_NOT_FOUND', `verify (${mode})`);
             });
         });
 
@@ -876,21 +1066,21 @@ describe('Auth Stub Compatibility - Integration Test', () => {
             });
         });
 
-        it('refuses a link for an unknown email, and an email change to one in use', async () => {
+        it('refuses a link for an unknown user, and withholds one that would reveal whether an email is in use', async () => {
             await testAllImplementations(async (auth, mode) => {
                 await auth.createUser({ uid: 'settled', email: 'settled@example.com' });
                 await auth.createUser({ uid: 'neighbour', email: 'neighbour@example.com' });
+                // With email enumeration protection Firebase answers without a link, which the Admin SDK reports so
+                const withheld = { code: 'auth/internal-error', message: 'INTERNAL ASSERT FAILED: Unable to create the email action link' };
 
-                await expect(auth.generatePasswordResetLink('nobody@example.com'), `reset (${mode})`).rejects.toMatchObject({
-                    code: 'auth/email-not-found',
-                    message: 'There is no user record corresponding to the provided email.',
-                });
+                await expect(auth.generatePasswordResetLink('nobody@example.com'), `reset (${mode})`).rejects.toMatchObject(withheld);
                 const userNotFound = { code: 'auth/user-not-found', message: 'There is no user record corresponding to the provided identifier.' };
                 await expect(auth.generateEmailVerificationLink('nobody@example.com'), `verify (${mode})`).rejects.toMatchObject(userNotFound);
                 await expect(auth.generateVerifyAndChangeEmailLink('nobody@example.com', 'free@example.com'), `change (${mode})`).rejects.toMatchObject(userNotFound);
-                const emailExists = { code: 'auth/email-already-exists', message: 'The email address is already in use by another account.' };
-                await expect(auth.generateVerifyAndChangeEmailLink('settled@example.com', 'Neighbour@Example.com'), `taken (${mode})`).rejects.toMatchObject(emailExists);
-                await expect(auth.generateVerifyAndChangeEmailLink('settled@example.com', 'settled@example.com'), `own (${mode})`).rejects.toMatchObject(emailExists);
+                // The emulator says the new email is in use, despite email enumeration protection
+                const inUse = mode === 'emulator' ? { code: 'auth/email-already-exists', message: 'The email address is already in use by another account.' } : withheld;
+                await expect(auth.generateVerifyAndChangeEmailLink('settled@example.com', 'Neighbour@Example.com'), `taken (${mode})`).rejects.toMatchObject(inUse);
+                await expect(auth.generateVerifyAndChangeEmailLink('settled@example.com', 'settled@example.com'), `own (${mode})`).rejects.toMatchObject(inUse);
             });
         });
     });
@@ -906,34 +1096,35 @@ describe('Auth Stub Compatibility - Integration Test', () => {
                 const inRoot = await root.createUser({ email: 'shared@example.com', password: 'password-root' });
 
                 expect(new Set([inA.uid, inB.uid, inRoot.uid]).size, `separate uids (${mode})`).toBe(3);
-                expect(inA.tenantId, `tenant A record (${mode})`).toBe(TENANT_A);
-                expect(inB.tenantId, `tenant B record (${mode})`).toBe(TENANT_B);
+                expect(inA.tenantId, `tenant A record (${mode})`).toBe(a.tenantId);
+                expect(inB.tenantId, `tenant B record (${mode})`).toBe(b.tenantId);
                 expect(inRoot.tenantId, `root record (${mode})`).toBeUndefined();
                 expect((await a.getUserByEmail('shared@example.com')).toJSON(), `A lookup (${mode})`).toEqual(inA.toJSON());
                 expect((await b.getUserByEmail('SHARED@example.com')).uid, `B lookup (${mode})`).toBe(inB.uid);
                 expect((await root.getUserByEmail('shared@example.com')).uid, `root lookup (${mode})`).toBe(inRoot.uid);
 
-                const signedInA = await client.signInWithPassword({ email: 'shared@example.com', password: 'password-a', returnSecureToken: true, tenantId: TENANT_A });
+                const signedInA = await client.signInWithPassword({ email: 'shared@example.com', password: 'password-a', returnSecureToken: true, tenantId: a.tenantId });
                 expect(signedInA.localId, `A sign-in (${mode})`).toBe(inA.uid);
                 expect((await a.verifyIdToken(signedInA.idToken!, true)).firebase, `A token (${mode})`).toEqual({
                     identities: { email: ['shared@example.com'] },
                     sign_in_provider: 'password',
-                    tenant: TENANT_A,
+                    tenant: a.tenantId,
                 });
-                const signedInB = await client.signInWithPassword({ email: 'shared@example.com', password: 'password-b', returnSecureToken: true, tenantId: TENANT_B });
+                const signedInB = await client.signInWithPassword({ email: 'shared@example.com', password: 'password-b', returnSecureToken: true, tenantId: b.tenantId });
                 expect(signedInB.localId, `B sign-in (${mode})`).toBe(inB.uid);
                 const signedInRoot = await client.signInWithPassword({ email: 'shared@example.com', password: 'password-root', returnSecureToken: true });
                 expect(signedInRoot.localId, `root sign-in (${mode})`).toBe(inRoot.uid);
                 expect((await root.verifyIdToken(signedInRoot.idToken!, true)).firebase.tenant, `root token (${mode})`).toBeUndefined();
 
+                // The tenants have no email enumeration protection; the emulator's take the project's
                 await expectIdentityToolkitError(
-                    client.signInWithPassword({ email: 'shared@example.com', password: 'password-b', returnSecureToken: true, tenantId: TENANT_A }),
-                    'INVALID_PASSWORD',
+                    client.signInWithPassword({ email: 'shared@example.com', password: 'password-b', returnSecureToken: true, tenantId: a.tenantId }),
+                    mode === 'emulator' ? 'INVALID_LOGIN_CREDENTIALS' : 'INVALID_PASSWORD',
                     `B's password in A (${mode})`,
                 );
                 await expectIdentityToolkitError(
                     client.signInWithPassword({ email: 'shared@example.com', password: 'password-a', returnSecureToken: true }),
-                    'INVALID_PASSWORD',
+                    'INVALID_LOGIN_CREDENTIALS',
                     `A's password in root (${mode})`,
                 );
             });
@@ -953,9 +1144,10 @@ describe('Auth Stub Compatibility - Integration Test', () => {
                 expect((await a.listUsers()).users.map((user) => user.uid), `A listUsers (${mode})`).toEqual(['only-in-a']);
                 await expect(b.updateUser('only-in-a', { displayName: 'x' }), `B updateUser (${mode})`).rejects.toMatchObject({ code: 'auth/user-not-found' });
                 await expect(b.deleteUser('only-in-a'), `B deleteUser (${mode})`).rejects.toMatchObject({ code: 'auth/user-not-found' });
+                // The tenants have no email enumeration protection; the emulator's take the project's
                 await expectIdentityToolkitError(
-                    client.signInWithPassword({ email: 'only-in-a@example.com', password: 'secret1', returnSecureToken: true, tenantId: TENANT_B }),
-                    'EMAIL_NOT_FOUND',
+                    client.signInWithPassword({ email: 'only-in-a@example.com', password: 'secret1', returnSecureToken: true, tenantId: b.tenantId }),
+                    mode === 'emulator' ? 'INVALID_LOGIN_CREDENTIALS' : 'EMAIL_NOT_FOUND',
                     `B sign-in (${mode})`,
                 );
 
@@ -975,11 +1167,11 @@ describe('Auth Stub Compatibility - Integration Test', () => {
                 const rootToken = await signInToPool(client, root, 'member');
                 const cookieA = await a.createSessionCookie(tokenA, { expiresIn: FIVE_MINUTES });
 
-                expect((await a.verifyIdToken(tokenA, true)).firebase.tenant, `A token in A (${mode})`).toBe(TENANT_A);
+                expect((await a.verifyIdToken(tokenA, true)).firebase.tenant, `A token in A (${mode})`).toBe(a.tenantId);
                 expect(await a.verifySessionCookie(cookieA, true), `A cookie in A (${mode})`).toMatchObject({
                     uid: 'member',
-                    iss: `https://session.firebase.google.com/${EMULATOR_PROJECT_ID}`,
-                    firebase: { tenant: TENANT_A },
+                    iss: `https://session.firebase.google.com/${projectIdOf(mode)}`,
+                    firebase: { tenant: a.tenantId },
                 });
 
                 await expect(b.verifyIdToken(tokenA, true), `A token in B (${mode})`).rejects.toMatchObject(mismatchingTenant);
@@ -989,8 +1181,8 @@ describe('Auth Stub Compatibility - Integration Test', () => {
                 await expect(a.createSessionCookie(rootToken, { expiresIn: FIVE_MINUTES }), `root token to an A cookie (${mode})`).rejects.toMatchObject(mismatchingTenant);
 
                 // As the Admin SDK: the project-level instance compares no tenant, and looks the uid up in the project's own pool
-                expect((await root.verifyIdToken(tokenA, true)).firebase.tenant, `A token at project level (${mode})`).toBe(TENANT_A);
-                expect((await root.verifySessionCookie(cookieA, true)).firebase.tenant, `A cookie at project level (${mode})`).toBe(TENANT_A);
+                expect((await root.verifyIdToken(tokenA, true)).firebase.tenant, `A token at project level (${mode})`).toBe(a.tenantId);
+                expect((await root.verifySessionCookie(cookieA, true)).firebase.tenant, `A cookie at project level (${mode})`).toBe(a.tenantId);
                 await expect(root.verifyIdToken(await signInToPool(client, a, 'a-only'), true), `A-only user at project level (${mode})`).rejects.toMatchObject({
                     code: 'auth/user-not-found',
                 });
@@ -1001,7 +1193,7 @@ describe('Auth Stub Compatibility - Integration Test', () => {
         it('revokes tokens and cookies in one pool only', async () => {
             await testAllTenantImplementations(async ({ a, b }, mode, client) => {
                 await a.createUser({ uid: 'member' });
-                await b.createUser({ uid: 'member' });
+                const createdInB = await b.createUser({ uid: 'member' });
                 const tokenA = await signInToPool(client, a, 'member');
                 const tokenB = await signInToPool(client, b, 'member');
                 const cookieA = await a.createSessionCookie(tokenA, { expiresIn: FIVE_MINUTES });
@@ -1011,7 +1203,7 @@ describe('Auth Stub Compatibility - Integration Test', () => {
                 await a.revokeRefreshTokens('member');
 
                 expectRecentUtcString((await a.getUser('member')).tokensValidAfterTime, `A tokensValidAfterTime (${mode})`);
-                expect((await b.getUser('member')).tokensValidAfterTime, `B tokensValidAfterTime (${mode})`).toBeUndefined();
+                expect((await b.getUser('member')).tokensValidAfterTime, `B tokensValidAfterTime unchanged (${mode})`).toBe(createdInB.tokensValidAfterTime);
                 await expect(a.verifyIdToken(tokenA, true), `A token (${mode})`).rejects.toMatchObject({ code: 'auth/id-token-revoked' });
                 await expect(a.verifySessionCookie(cookieA, true), `A cookie (${mode})`).rejects.toMatchObject({ code: 'auth/session-cookie-revoked' });
                 await expect(b.verifyIdToken(tokenB, true), `B token (${mode})`).resolves.toMatchObject({ uid: 'member' });
@@ -1027,19 +1219,35 @@ describe('Auth Stub Compatibility - Integration Test', () => {
                 const tokenA = await a.createCustomToken('newcomer', { role: 'admin' });
                 const rootCustomToken = await root.createCustomToken('newcomer');
 
-                expect(jwtPayload(tokenA).tenant_id, `A custom token (${mode})`).toBe(TENANT_A);
+                expect(jwtPayload(tokenA).tenant_id, `A custom token (${mode})`).toBe(a.tenantId);
                 expect(jwtPayload(rootCustomToken).tenant_id, `root custom token (${mode})`).toBeUndefined();
-                await expectIdentityToolkitError(client.signInWithCustomToken({ token: tokenA, returnSecureToken: true, tenantId: TENANT_B }), 'TENANT_ID_MISMATCH', `A token in B (${mode})`);
+                const emulator = mode === 'emulator';
+                const mismatch = 'TENANT_ID_MISMATCH : Specified tenant ID does not match the custom token.';
+                // The emulator words the refusal without detail
                 await expectIdentityToolkitError(
-                    client.signInWithCustomToken({ token: rootCustomToken, returnSecureToken: true, tenantId: TENANT_A }),
-                    'TENANT_ID_MISMATCH',
-                    `root token in A (${mode})`,
+                    client.signInWithCustomToken({ token: tokenA, returnSecureToken: true, tenantId: b.tenantId }),
+                    emulator ? 'TENANT_ID_MISMATCH' : mismatch,
+                    `A token in B (${mode})`,
                 );
+                // Firebase answers a project token in a tenant with an internal error; the emulator with a mismatch
+                await expectIdentityToolkitError(
+                    client.signInWithCustomToken({ token: rootCustomToken, returnSecureToken: true, tenantId: a.tenantId }),
+                    emulator ? 'TENANT_ID_MISMATCH' : 'Internal error encountered.',
+                    `root token in A (${mode})`,
+                    emulator ? 400 : 500,
+                );
+                // The emulator signs a tenant's token in to the project's pool when no tenant is named
+                const tokenAWithoutTenant = client.signInWithCustomToken({ token: await a.createCustomToken('a-token-in-root'), returnSecureToken: true });
+                if (emulator) {
+                    await expect(tokenAWithoutTenant, `A token without a tenant (${mode})`).resolves.toMatchObject({ idToken: expect.any(String) });
+                } else {
+                    await expectIdentityToolkitError(tokenAWithoutTenant, mismatch, `A token without a tenant (${mode})`);
+                }
 
-                const { idToken } = await client.signInWithCustomToken({ token: tokenA, returnSecureToken: true, tenantId: TENANT_A });
+                const { idToken } = await client.signInWithCustomToken({ token: tokenA, returnSecureToken: true, tenantId: a.tenantId });
 
-                expect(await a.verifyIdToken(idToken, true), `claims (${mode})`).toMatchObject({ uid: 'newcomer', role: 'admin', firebase: { sign_in_provider: 'custom', tenant: TENANT_A } });
-                expect((await a.getUser('newcomer')).tenantId, `created in A (${mode})`).toBe(TENANT_A);
+                expect(await a.verifyIdToken(idToken, true), `claims (${mode})`).toMatchObject({ uid: 'newcomer', role: 'admin', firebase: { sign_in_provider: 'custom', tenant: a.tenantId } });
+                expect((await a.getUser('newcomer')).tenantId, `created in A (${mode})`).toBe(a.tenantId);
                 await expect(b.getUser('newcomer'), `not in B (${mode})`).rejects.toMatchObject({ code: 'auth/user-not-found' });
                 await expect(root.getUser('newcomer'), `not in root (${mode})`).rejects.toMatchObject({ code: 'auth/user-not-found' });
             });
@@ -1053,21 +1261,23 @@ describe('Auth Stub Compatibility - Integration Test', () => {
                 const link = await a.generatePasswordResetLink('shared@example.com');
                 const oobCode = oobCodeOf(link);
 
-                expect(new URL(link).searchParams.get('tenantId'), `link tenant (${mode})`).toBe(TENANT_A);
-                await expectIdentityToolkitError(client.resetPassword({ oobCode, tenantId: TENANT_B }), 'INVALID_OOB_CODE', `read in B (${mode})`);
-                await expectIdentityToolkitError(client.resetPassword({ oobCode, newPassword: 'changed1', tenantId: TENANT_B }), 'INVALID_OOB_CODE', `reset in B (${mode})`);
+                expect(new URL(link).searchParams.get('tenantId'), `link tenant (${mode})`).toBe(a.tenantId);
+                await expectIdentityToolkitError(client.resetPassword({ oobCode, tenantId: b.tenantId }), 'INVALID_OOB_CODE', `read in B (${mode})`);
+                await expectIdentityToolkitError(client.resetPassword({ oobCode, newPassword: 'changed1', tenantId: b.tenantId }), 'INVALID_OOB_CODE', `reset in B (${mode})`);
                 await expectIdentityToolkitError(client.resetPassword({ oobCode, newPassword: 'changed1' }), 'INVALID_OOB_CODE', `reset in root (${mode})`);
 
-                await expect(client.resetPassword({ oobCode, newPassword: 'changed1', tenantId: TENANT_A }), `reset in A (${mode})`).resolves.toMatchObject({
+                await expect(client.resetPassword({ oobCode, newPassword: 'changed1', tenantId: a.tenantId }), `reset in A (${mode})`).resolves.toMatchObject({
                     requestType: 'PASSWORD_RESET',
                     email: 'shared@example.com',
                 });
 
                 const signIn = (password: string, tenantId?: string) => client.signInWithPassword({ email: 'shared@example.com', password, returnSecureToken: true, tenantId });
-                await expect(signIn('changed1', TENANT_A), `new A password (${mode})`).resolves.toMatchObject({ localId: inA.uid });
-                await expectIdentityToolkitError(signIn('password-a', TENANT_A), 'INVALID_PASSWORD', `old A password (${mode})`);
-                await expectIdentityToolkitError(signIn('changed1', TENANT_B), 'INVALID_PASSWORD', `new A password in B (${mode})`);
-                await expect(signIn('password-b', TENANT_B), `B password (${mode})`).resolves.toMatchObject({ email: 'shared@example.com' });
+                await expect(signIn('changed1', a.tenantId), `new A password (${mode})`).resolves.toMatchObject({ localId: inA.uid });
+                // The tenants have no email enumeration protection; the emulator's take the project's
+                const wrongPassword = mode === 'emulator' ? 'INVALID_LOGIN_CREDENTIALS' : 'INVALID_PASSWORD';
+                await expectIdentityToolkitError(signIn('password-a', a.tenantId), wrongPassword, `old A password (${mode})`);
+                await expectIdentityToolkitError(signIn('changed1', b.tenantId), wrongPassword, `new A password in B (${mode})`);
+                await expect(signIn('password-b', b.tenantId), `B password (${mode})`).resolves.toMatchObject({ email: 'shared@example.com' });
                 await expect(signIn('password-root'), `root password (${mode})`).resolves.toMatchObject({ email: 'shared@example.com' });
                 expect((await b.getUserByEmail('shared@example.com')).emailVerified, `B unverified (${mode})`).toBe(false);
             });
@@ -1080,9 +1290,9 @@ describe('Auth Stub Compatibility - Integration Test', () => {
                 await b.createUser({ email: 'taken-in-b@example.com' });
                 const verifyCode = oobCodeOf(await a.generateEmailVerificationLink('shared@example.com'));
 
-                await expectIdentityToolkitError(client.applyActionCode({ oobCode: verifyCode, tenantId: TENANT_B }), 'INVALID_OOB_CODE', `verify in B (${mode})`);
+                await expectIdentityToolkitError(client.applyActionCode({ oobCode: verifyCode, tenantId: b.tenantId }), 'INVALID_OOB_CODE', `verify in B (${mode})`);
                 await expectIdentityToolkitError(client.applyActionCode({ oobCode: verifyCode }), 'INVALID_OOB_CODE', `verify in root (${mode})`);
-                await expect(client.applyActionCode({ oobCode: verifyCode, tenantId: TENANT_A }), `verify in A (${mode})`).resolves.toMatchObject({
+                await expect(client.applyActionCode({ oobCode: verifyCode, tenantId: a.tenantId }), `verify in A (${mode})`).resolves.toMatchObject({
                     localId: inA.uid,
                     emailVerified: true,
                 });
@@ -1091,9 +1301,9 @@ describe('Auth Stub Compatibility - Integration Test', () => {
                 // An email in use in another pool is free in this one
                 const changeLink = await a.generateVerifyAndChangeEmailLink('shared@example.com', 'taken-in-b@example.com');
                 const changeCode = oobCodeOf(changeLink);
-                expect(new URL(changeLink).searchParams.get('tenantId'), `link tenant (${mode})`).toBe(TENANT_A);
-                await expectIdentityToolkitError(client.applyActionCode({ oobCode: changeCode, tenantId: TENANT_B }), 'INVALID_OOB_CODE', `change in B (${mode})`);
-                await expect(client.applyActionCode({ oobCode: changeCode, tenantId: TENANT_A }), `change in A (${mode})`).resolves.toMatchObject({
+                expect(new URL(changeLink).searchParams.get('tenantId'), `link tenant (${mode})`).toBe(a.tenantId);
+                await expectIdentityToolkitError(client.applyActionCode({ oobCode: changeCode, tenantId: b.tenantId }), 'INVALID_OOB_CODE', `change in B (${mode})`);
+                await expect(client.applyActionCode({ oobCode: changeCode, tenantId: a.tenantId }), `change in A (${mode})`).resolves.toMatchObject({
                     localId: inA.uid,
                     email: 'taken-in-b@example.com',
                 });

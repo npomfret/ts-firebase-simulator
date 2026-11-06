@@ -35,6 +35,16 @@ export interface SeedUser extends CreateRequest {
 export interface StubAuthOptions {
     /** The project tokens are issued for, as their audience and in their issuer. Defaults to 'test-project'. */
     projectId?: string;
+    /**
+     * Whether the project's own pool has email enumeration protection (Identity Platform's
+     * "improved email privacy"), as Firebase turns it on for new projects. Defaults to true.
+     */
+    emailEnumerationProtection?: boolean;
+    /**
+     * The tenants with email enumeration protection, by tenant ID. A tenant not listed has it off,
+     * as a new tenant does.
+     */
+    tenantEmailEnumerationProtection?: Readonly<Record<string, boolean>>;
 }
 
 /** The operations `failNext` can make fail */
@@ -50,7 +60,8 @@ interface StoredUser {
     disabled: boolean;
     password?: string;
     createdAtMs: number;
-    lastSignInAtMs: number;
+    /** Unset until the first sign-in */
+    lastSignInAtMs?: number;
     lastRefreshAtMs?: number;
     /** Whole seconds: tokens issued before it are revoked */
     validSinceSeconds?: number;
@@ -74,7 +85,10 @@ const EMAIL_NOT_FOUND = ['auth/email-not-found', 'There is no user record corres
 const INVALID_TENANT_ID = ['auth/invalid-tenant-id', 'The tenant ID must be a valid non-empty string.'] as const;
 const MISMATCHING_TENANT_ID = ['auth/mismatching-tenant-id', 'User tenant ID does not match with the current TenantAwareAuth tenant ID.'] as const;
 
-const INVALID_CUSTOM_TOKEN_FORMAT = 'INVALID_CUSTOM_TOKEN : Invalid assertion format';
+const INVALID_CUSTOM_TOKEN_FORMAT = 'INVALID_CUSTOM_TOKEN : Invalid assertion format. 3 dot separated segments required.';
+const CUSTOM_TOKEN_TENANT_MISMATCH = 'TENANT_ID_MISMATCH : Specified tenant ID does not match the custom token.';
+/** The Admin SDK's error when Firebase answers a link request without a link, as email enumeration protection does */
+const ACTION_LINK_WITHHELD = ['auth/internal-error', 'INTERNAL ASSERT FAILED: Unable to create the email action link'] as const;
 const MIN_PASSWORD_LENGTH = 6;
 
 /** The `mode` an action link carries for each kind of code */
@@ -139,8 +153,11 @@ export class AuthPool {
     readonly actionCodes = new Map<string, ActionCode>();
     readonly failures = new Map<string, { remaining: number; error: Error; }>();
 
-    /** `undefined` for the project's own pool */
-    constructor(readonly tenantId: string | undefined) {}
+    /**
+     * `tenantId` is `undefined` for the project's own pool. With email enumeration protection, password
+     * sign-in and link generation do not say whether an email has an account.
+     */
+    constructor(readonly tenantId: string | undefined, readonly emailEnumerationProtection: boolean) {}
 
     requireUser(uid: string): StoredUser {
         const user = this.users.get(uid);
@@ -176,7 +193,7 @@ export class AuthPool {
  */
 /** Not exported from the package */
 export class AuthAuthority {
-    readonly rootPool = new AuthPool(undefined);
+    readonly rootPool: AuthPool;
     /** As the emulator: a tenant's pool comes into being the first time the tenant is used */
     private readonly tenantPools = new Map<string, AuthPool>();
     /** Signs the stub's tokens, standing in for Google's keys: only tokens this simulator issued verify */
@@ -184,7 +201,9 @@ export class AuthAuthority {
     /** How far the clock is ahead of the real one, by what `advanceClock` added */
     private clockOffsetMs = 0;
 
-    constructor(readonly projectId: string) {}
+    constructor(readonly projectId: string, private readonly tenantEmailEnumerationProtection: Readonly<Record<string, boolean>>, rootEmailEnumerationProtection: boolean) {
+        this.rootPool = new AuthPool(undefined, rootEmailEnumerationProtection);
+    }
 
     pool(tenantId: string | undefined): AuthPool {
         // As the emulator: a request without a tenant ID (or with an empty one) reaches the project's own pool
@@ -193,7 +212,7 @@ export class AuthAuthority {
         }
         let pool = this.tenantPools.get(tenantId);
         if (!pool) {
-            pool = new AuthPool(tenantId);
+            pool = new AuthPool(tenantId, this.tenantEmailEnumerationProtection[tenantId] === true);
             this.tenantPools.set(tenantId, pool);
         }
         return pool;
@@ -218,38 +237,31 @@ export class AuthAuthority {
         return toSeconds(this.nowMs());
     }
 
-    /** As the emulator: an unknown email, then a disabled user, then a wrong or absent password is refused */
-    signInWithPassword(request: { email: string; password: string; tenantId?: string; }): SignInWithPasswordResponse {
+    /**
+     * As Firebase: an unknown email, then a disabled user, then a wrong or absent password is refused.
+     * With email enumeration protection, an unknown email and a wrong or absent password are one error.
+     */
+    signInWithPassword(request: { email: string; password: string; returnSecureToken?: boolean; tenantId?: string; }): SignInWithPasswordResponse {
         const pool = this.pool(request.tenantId);
         const user = pool.findByEmail(request.email);
         if (!user) {
-            throw new IdentityToolkitError(400, 'EMAIL_NOT_FOUND');
+            throw new IdentityToolkitError(400, pool.emailEnumerationProtection ? 'INVALID_LOGIN_CREDENTIALS' : 'EMAIL_NOT_FOUND');
         }
         if (user.disabled) {
             throw new IdentityToolkitError(400, 'USER_DISABLED');
         }
         if (user.password === undefined || user.password !== request.password) {
-            throw new IdentityToolkitError(400, 'INVALID_PASSWORD');
+            throw new IdentityToolkitError(400, pool.emailEnumerationProtection ? 'INVALID_LOGIN_CREDENTIALS' : 'INVALID_PASSWORD');
         }
-        // As the emulator: tokens are returned whatever returnSecureToken asks for
         const idToken = this.signIn(pool, user.uid, 'password', {});
-        return { localId: user.uid, email: user.email!, idToken, refreshToken: newRefreshToken(), expiresIn: String(ID_TOKEN_LIFETIME_SECONDS) };
+        // As Firebase: an ID token whatever returnSecureToken asks for, and a refresh token only when it asks
+        const refresh = request.returnSecureToken ? { refreshToken: newRefreshToken(), expiresIn: String(ID_TOKEN_LIFETIME_SECONDS) } : {};
+        return { localId: user.uid, email: user.email!, idToken, ...refresh };
     }
 
-    /**
-     * As the emulator: a request naming a tenant refuses a token not minted for that tenant
-     * before anything else is checked
-     */
     signInWithCustomToken(request: { token: string; tenantId?: string; }): SignInWithCustomTokenResponse {
         const pool = this.pool(request.tenantId);
-        if (pool.tenantId !== undefined) {
-            const parts = request.token.split('.');
-            const payload = parts.length === 3 ? decodeJwtPart(parts[1]) : undefined;
-            if (payload?.tenant_id !== pool.tenantId) {
-                throw new IdentityToolkitError(400, 'TENANT_ID_MISMATCH');
-            }
-        }
-        const { uid, claims } = this.decodeCustomToken(request.token);
+        const { uid, claims } = this.decodeCustomToken(request.token, pool);
         if (pool.users.get(uid)?.disabled) {
             throw new IdentityToolkitError(400, 'USER_DISABLED');
         }
@@ -258,14 +270,14 @@ export class AuthAuthority {
     }
 
     /**
-     * As the emulator: a code is used up once it gets past its type and password checks, and
-     * then acts on whichever user of its pool has the email it was issued for, if any does. A
-     * disabled user is not refused.
+     * As Firebase: a code is used up once it gets past its type and password checks, and then acts
+     * on whichever user of its pool has the email it was issued for; with none, it is `USER_NOT_FOUND`.
+     * A disabled user is not refused.
      */
     resetPassword(request: { oobCode: string; newPassword?: string; tenantId?: string; }): ResetPasswordResponse {
         const pool = this.pool(request.tenantId);
         const actionCode = requireActionCode(pool, request.oobCode);
-        // As the emulator: without a new password (or with an empty one) the code is only read
+        // As Firebase: without a new password (or with an empty one) the code is only read
         if (request.newPassword) {
             if (actionCode.requestType !== 'PASSWORD_RESET') {
                 throw new IdentityToolkitError(400, 'INVALID_OOB_CODE');
@@ -273,42 +285,61 @@ export class AuthAuthority {
             if (request.newPassword.length < MIN_PASSWORD_LENGTH) {
                 throw new IdentityToolkitError(400, `WEAK_PASSWORD : Password should be at least ${MIN_PASSWORD_LENGTH} characters`);
             }
-            const user = useActionCode(pool, request.oobCode, actionCode);
-            // As the emulator: a reset verifies the email and revokes earlier tokens, without refreshing the account
+            const user = useActionCode(pool, request.oobCode, actionCode, 'USER_NOT_FOUND');
+            // As Firebase: a reset verifies the email and revokes earlier tokens, without refreshing the account
             pool.users.set(user.uid, { ...user, password: request.newPassword, emailVerified: true, validSinceSeconds: this.nowSeconds() });
         }
         return { requestType: actionCode.requestType, email: actionCode.email, ...(actionCode.newEmail === undefined ? {} : { newEmail: actionCode.newEmail }) };
     }
 
-    /** As the emulator: an email change neither revokes tokens nor needs the new email to be free until it is applied */
+    /**
+     * As Firebase: a password-reset code is refused and left usable, and so is an email change to an
+     * address taken since the link was made. An email change revokes earlier tokens; a verification does not.
+     */
     applyActionCode(request: { oobCode: string; tenantId?: string; }): UpdateAccountResponse {
         const pool = this.pool(request.tenantId);
         const actionCode = requireActionCode(pool, request.oobCode);
         if (actionCode.requestType === 'PASSWORD_RESET') {
-            // The emulator's answer: it does not implement this code type here
-            throw new IdentityToolkitError(501, actionCode.requestType);
+            throw new IdentityToolkitError(400, 'INVALID_OOB_CODE');
         }
-        const user = useActionCode(pool, request.oobCode, actionCode);
+        // As Firebase for a verification code. Real Firebase was not checked for an email-change code whose
+        // account no longer has its email, so that keeps the emulator's answer: the code is used up, as invalid.
+        if (!pool.findByEmail(actionCode.email)) {
+            useActionCode(pool, request.oobCode, actionCode, actionCode.requestType === 'VERIFY_EMAIL' ? 'EMAIL_NOT_FOUND' : 'INVALID_OOB_CODE');
+        }
         if (actionCode.newEmail !== undefined && pool.findByEmail(actionCode.newEmail)) {
             throw new IdentityToolkitError(400, 'EMAIL_EXISTS');
         }
-        const updated: StoredUser = { ...user, email: actionCode.newEmail ?? user.email, emailVerified: true };
+        const user = useActionCode(pool, request.oobCode, actionCode, 'INVALID_OOB_CODE');
+        const updated: StoredUser = {
+            ...user,
+            email: actionCode.newEmail ?? user.email,
+            emailVerified: true,
+            validSinceSeconds: actionCode.newEmail === undefined ? user.validSinceSeconds : this.nowSeconds(),
+        };
         pool.users.set(user.uid, updated);
-        return { localId: updated.uid, email: updated.email!, emailVerified: updated.emailVerified };
+        return { localId: updated.uid, email: updated.email!, ...(actionCode.newEmail === undefined ? {} : { newEmail: actionCode.newEmail }), emailVerified: updated.emailVerified };
     }
 
-    /** A custom token's uid and developer claims, refused as the emulator refuses it, or for a signature not this simulator's */
-    private decodeCustomToken(token: string): { uid: string; claims: object; } {
+    /**
+     * A custom token's uid and developer claims, refused as Firebase refuses it: its form, then its
+     * tenant, then its audience; and refused for a signature not this simulator's
+     */
+    private decodeCustomToken(token: string, pool: AuthPool): { uid: string; claims: object; } {
         const parts = token.split('.');
         const payload = parts.length === 3 && decodeJwtPart(parts[0]) ? decodeJwtPart(parts[1]) : undefined;
         if (!payload) {
             throw new IdentityToolkitError(400, INVALID_CUSTOM_TOKEN_FORMAT);
         }
+        if (pool.tenantId !== undefined && payload.tenant_id === undefined) {
+            // Firebase's answer to a tenant sign-in with a token minted for no tenant (or an ID token)
+            throw new IdentityToolkitError(500, 'Internal error encountered.');
+        }
+        if (payload.tenant_id !== pool.tenantId) {
+            throw new IdentityToolkitError(400, CUSTOM_TOKEN_TENANT_MISMATCH);
+        }
         if (payload.aud !== CUSTOM_TOKEN_AUDIENCE) {
-            throw new IdentityToolkitError(
-                400,
-                `INVALID_CUSTOM_TOKEN : ((Invalid aud (audience): ${String(payload.aud)} Note: Firebase ID Tokens / third-party tokens cannot be used with signInWithCustomToken.))`,
-            );
+            throw new IdentityToolkitError(400, 'INVALID_CUSTOM_TOKEN');
         }
         if (parts[2] !== this.sign(`${parts[0]}.${parts[1]}`) || typeof payload.uid !== 'string') {
             throw new IdentityToolkitError(400, 'INVALID_CUSTOM_TOKEN');
@@ -342,7 +373,8 @@ export class AuthAuthority {
             ...(user.photoURL === undefined ? {} : { picture: user.photoURL }),
             ...developerClaims,
             ...(user.email === undefined ? {} : { email: user.email }),
-            email_verified: user.emailVerified,
+            // As Firebase: email_verified only for an account with an email
+            ...(user.email === undefined ? {} : { email_verified: user.emailVerified }),
             ...(user.phoneNumber === undefined ? {} : { phone_number: user.phoneNumber }),
             auth_time: signedInAt,
             user_id: user.uid,
@@ -470,8 +502,7 @@ export abstract class StubPoolAuth implements IAuth {
             phoneNumber: properties.phoneNumber === null ? undefined : (properties.phoneNumber ?? existing.phoneNumber),
             disabled: properties.disabled ?? existing.disabled,
             password: properties.password ?? existing.password,
-            // As the emulator: a new password refreshes the account, and a new password or email revokes earlier tokens
-            lastRefreshAtMs: passwordChanged ? nowMs : existing.lastRefreshAtMs,
+            // As Firebase: a new password or email revokes earlier tokens, without refreshing the account
             validSinceSeconds: passwordChanged || emailChanged ? toSeconds(nowMs) : existing.validSinceSeconds,
         };
         this.#pool.users.set(uid, updated);
@@ -482,7 +513,7 @@ export abstract class StubPoolAuth implements IAuth {
         if (!Number.isInteger(maxResults) || maxResults <= 0 || maxResults > MAX_LIST_USERS_RESULTS) {
             throw new StubAuthError('auth/argument-error', 'Required "maxResults" must be a positive integer that does not exceed 1000.');
         }
-        // As the emulator: users in uid order, and the page token is the uid the next page starts after
+        // As Firebase: users in uid order, and the page token is the uid the next page starts after
         const page = [...this.#pool.users.values()]
             .sort((a, b) => (a.uid < b.uid ? -1 : a.uid > b.uid ? 1 : 0))
             .filter((user) => pageToken === undefined || user.uid > pageToken)
@@ -616,15 +647,19 @@ export abstract class StubPoolAuth implements IAuth {
     issueActionCode(email: string, requestType: 'VERIFY_AND_CHANGE_EMAIL', newEmail: string): string;
     issueActionCode(email: string, requestType: ActionCodeRequestType, newEmail?: string): string {
         const user = this.#pool.findByEmail(email);
+        // As Firebase: with email enumeration protection, a refusal that would say whether an email has an
+        // account comes back without a link, which the Admin SDK reports as an internal error
+        const withheld = this.#pool.emailEnumerationProtection;
         if (!user) {
             // As the Admin SDK: a password reset names the email, the other links the user
-            const [code, message] = requestType === 'PASSWORD_RESET' ? EMAIL_NOT_FOUND : USER_NOT_FOUND;
+            const [code, message] = requestType !== 'PASSWORD_RESET' ? USER_NOT_FOUND : withheld ? ACTION_LINK_WITHHELD : EMAIL_NOT_FOUND;
             throw new StubAuthError(code, message);
         }
         const actionCode: ActionCode = { requestType, email: user.email! };
         if (requestType === 'VERIFY_AND_CHANGE_EMAIL') {
             if (this.#pool.findByEmail(newEmail!)) {
-                throw new StubAuthError(...EMAIL_ALREADY_EXISTS);
+                const [code, message] = withheld ? ACTION_LINK_WITHHELD : EMAIL_ALREADY_EXISTS;
+                throw new StubAuthError(code, message);
             }
             actionCode.newEmail = normalizeEmail(newEmail!);
         }
@@ -633,7 +668,7 @@ export abstract class StubPoolAuth implements IAuth {
         return oobCode;
     }
 
-    /** A link of the form Firebase sends, carrying the code, and for a tenant the tenant ID as the emulator's links do */
+    /** A link of the form Firebase sends, carrying the code, and for a tenant the tenant ID */
     #actionLink(oobCode: string, requestType: ActionCodeRequestType): string {
         const query = new URLSearchParams({ mode: ACTION_LINK_MODES[requestType], oobCode, lang: 'en' });
         if (this.#pool.tenantId !== undefined) {
@@ -737,7 +772,8 @@ export class StubTenantManager implements ITenantManager {
 }
 
 /**
- * In-memory implementation of Firebase Auth for testing, matching the Auth emulator's behaviour.
+ * In-memory implementation of Firebase Auth for testing, matching real Firebase's behaviour, as checked
+ * against a real project; where the Auth emulator differs, the stub follows Firebase.
  * Its tokens are JWTs signed with a key of its own, so only tokens it issued verify. It holds the
  * project's own pool of accounts, and through `tenantManager()` one pool per Identity Platform tenant.
  */
@@ -747,7 +783,7 @@ export class StubAuth extends StubPoolAuth {
     readonly #tenants: StubTenantManager;
 
     constructor(options: StubAuthOptions = {}) {
-        const authority = new AuthAuthority(options.projectId ?? 'test-project');
+        const authority = new AuthAuthority(options.projectId ?? 'test-project', { ...options.tenantEmailEnumerationProtection }, options.emailEnumerationProtection ?? true);
         super(authority, authority.rootPool);
         this.#authority = authority;
         this.#tenants = new StubTenantManager(authority);
@@ -795,12 +831,12 @@ function requireActionCode(pool: AuthPool, oobCode: string): ActionCode {
     return actionCode;
 }
 
-/** Uses the code up, and returns the user of the pool that has its email */
-function useActionCode(pool: AuthPool, oobCode: string, actionCode: ActionCode): StoredUser {
+/** Uses the code up, and returns the user of the pool that has its email, refusing with `missing` if none has */
+function useActionCode(pool: AuthPool, oobCode: string, actionCode: ActionCode, missing: 'USER_NOT_FOUND' | 'EMAIL_NOT_FOUND' | 'INVALID_OOB_CODE'): StoredUser {
     pool.actionCodes.delete(oobCode);
     const user = pool.findByEmail(actionCode.email);
     if (!user) {
-        throw new IdentityToolkitError(400, 'INVALID_OOB_CODE');
+        throw new IdentityToolkitError(400, missing);
     }
     return user;
 }
@@ -816,10 +852,8 @@ function newUser(uid: string, properties: CreateRequest, createdAtMs: number): S
         disabled: properties.disabled ?? false,
         password: properties.password,
         createdAtMs,
-        // As the emulator: creating an account counts as its first sign-in
-        lastSignInAtMs: createdAtMs,
-        // As the emulator: an account created with a password has its tokens valid from creation
-        validSinceSeconds: properties.password === undefined ? undefined : toSeconds(createdAtMs),
+        // As Firebase: every account has its tokens valid from creation
+        validSinceSeconds: toSeconds(createdAtMs),
     };
 }
 
@@ -874,18 +908,20 @@ function toUtcString(ms: number): string {
 
 function toUserRecord(user: StoredUser, tenantId: string | undefined): UserRecord {
     const metadataFields = {
-        lastSignInTime: toUtcString(user.lastSignInAtMs),
+        lastSignInTime: user.lastSignInAtMs === undefined ? null : toUtcString(user.lastSignInAtMs),
         creationTime: toUtcString(user.createdAtMs),
         lastRefreshTime: user.lastRefreshAtMs === undefined ? null : toUtcString(user.lastRefreshAtMs),
     };
-    const metadata: UserMetadata = { ...metadataFields, toJSON: () => ({ ...metadataFields }) };
+    // As Firebase: lastSignInTime is null before the first sign-in, though the Admin SDK types it as a string
+    const metadata = { ...metadataFields, toJSON: () => ({ ...metadataFields }) } as UserMetadata;
 
+    // As Firebase: the phone provider before the password provider
     const providerData: UserInfo[] = [];
-    if (user.email !== undefined && user.password !== undefined) {
-        providerData.push(toUserInfo({ uid: user.email, displayName: user.displayName, email: user.email, photoURL: user.photoURL, providerId: 'password' }));
-    }
     if (user.phoneNumber !== undefined) {
         providerData.push(toUserInfo({ uid: user.phoneNumber, providerId: 'phone', phoneNumber: user.phoneNumber }));
+    }
+    if (user.email !== undefined && user.password !== undefined) {
+        providerData.push(toUserInfo({ uid: user.email, displayName: user.displayName, email: user.email, photoURL: user.photoURL, providerId: 'password' }));
     }
 
     const fields = {
