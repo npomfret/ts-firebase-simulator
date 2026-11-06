@@ -170,3 +170,40 @@ After any significant piece of work, and before committing it, have it reviewed 
 - This adds to any approval the project requires from the user. It never replaces one.
 
 *Generated from `npomfret/agent-standards`. Edit the standard there, not this copy.*
+
+## Git
+
+History stays linear, and parallel work happens in worktrees, never in branches switched in a shared checkout. Other agents are working in this checkout at the same time as you, with uncommitted changes of their own.
+
+### Rebase, never merge
+
+- Never run `git merge` to combine work, and never make a merge commit. The one exception is `git merge --ff-only`, which moves a branch forward without making one.
+- Never a plain `git pull`. In the shared checkout, `git pull --ff-only`; only if that refuses because the branches have diverged, `git pull --rebase`. In a worktree, `git rebase <base>`.
+- If a rebase hits a conflict, resolve it commit by commit and `git rebase --continue`. Never `git rebase --abort` and merge instead.
+- If git refuses because of uncommitted changes that are not yours, never stash, commit or discard them to get past it. Do the work in a worktree instead, or wait, or report it.
+- Never force-push the default branch. `git push --force-with-lease` only on a branch of your own that you rebased after pushing.
+
+### Worktrees, not branches
+
+- Never create, check out or switch to a branch in the shared checkout. It stays on the default branch, because switching changes every file under everyone else. `git worktree add -b` is the one way a branch is made.
+- Use a worktree when `git status` shows changes that are not yours, or when the work will take more than one commit. Otherwise commit straight on the default branch, staging only your own files.
+- Give each worktree its own folder under `.claude/worktrees/<name>`:
+  - In Claude Code, use `EnterWorktree`, or start a subagent with `isolation: "worktree"`.
+  - Otherwise, from the shared checkout, `git worktree add -b wt/<name> .claude/worktrees/<name> main` (use the repo's default branch if it is not `main`).
+- A project rule to work on main, or not to branch, means the shared checkout stays on its default branch. A worktree on its own short-lived branch is how work is isolated under that rule.
+- Build, test and commit inside the worktree. Never edit the shared checkout's files from it.
+- A subagent working in a worktree commits there and stops. The agent that started it lands the work with the steps below and removes the worktree. Never `git merge` a `worktree-*` branch.
+
+### Landing a worktree's commits
+
+1. Commit everything in the worktree. `git rebase` and `git worktree remove` both refuse while it has uncommitted changes.
+2. In the shared checkout, `git branch --show-current` must print the default branch; if it does not, stop and report it. Then `git pull --ff-only`, so the default branch is current.
+3. In the worktree, `git rebase main`, so its commits sit on top of it.
+4. In the shared checkout, `git merge --ff-only <worktree-branch>`.
+   - If git refuses because the default branch moved, go back to step 3.
+   - If git refuses because uncommitted changes that are not yours would be overwritten, wait or report it. Never stash or discard them, and never fall back to a merge commit.
+5. Leave the worktree first (in Claude Code, `ExitWorktree`), then, from the shared checkout, `git worktree remove .claude/worktrees/<name>` and `git branch -d <worktree-branch>`. For a worktree whose work you are dropping on purpose, `git branch -D`.
+
+- A worktree is removed as soon as its commits have landed or been dropped. Remove only worktrees you made, and report any other stale ones in one line at the end.
+
+*Generated from `npomfret/agent-standards`. Edit the standard there, not this copy.*

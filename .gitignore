@@ -8,3 +8,4 @@ test-reports/
 .gitnexus/
 .codex/config.toml
 tmp/
+.claude/worktrees/
