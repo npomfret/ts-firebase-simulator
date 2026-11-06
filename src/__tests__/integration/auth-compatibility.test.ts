@@ -485,12 +485,23 @@ describe('Auth Stub Compatibility - Integration Test', { timeout: realModeRuns ?
         it('lower-cases a new email and revalidates tokens from the change', async () => {
             await testAllImplementations(async (auth, mode) => {
                 await auth.createUser({ uid: 'mover', email: 'before@example.com' });
+                const idToken = await signIn(auth, mode, 'mover');
+                const before = await auth.getUser('mover');
 
+                // Every account has tokensValidAfterTime from creation, so the change must land in a later second to show it moved
+                await passOneSecond(mode);
                 const user = await auth.updateUser('mover', { email: 'After@Example.com' });
 
                 expect(user.email, `email (${mode})`).toBe('after@example.com');
                 expectRecentUtcString(user.tokensValidAfterTime, `tokensValidAfterTime (${mode})`);
-                expect(user.metadata.lastRefreshTime, `lastRefreshTime (${mode})`).toBeNull();
+                // The emulator gives an account tokensValidAfterTime only with a password, so it has none to move from
+                if (mode === 'emulator') {
+                    expect(before.tokensValidAfterTime, `tokensValidAfterTime before (${mode})`).toBeUndefined();
+                } else {
+                    expect(Date.parse(user.tokensValidAfterTime!), `tokensValidAfterTime moved (${mode})`).toBeGreaterThan(Date.parse(before.tokensValidAfterTime!));
+                }
+                await expect(auth.verifyIdToken(idToken, true), `earlier ID token (${mode})`).rejects.toMatchObject({ code: 'auth/id-token-revoked' });
+                expect(user.metadata.lastRefreshTime, `lastRefreshTime unchanged (${mode})`).toBe(before.metadata.lastRefreshTime);
                 await expect(auth.getUserByEmail('before@example.com'), `old email (${mode})`).rejects.toMatchObject({ code: 'auth/user-not-found' });
             });
         });
@@ -498,18 +509,29 @@ describe('Auth Stub Compatibility - Integration Test', { timeout: realModeRuns ?
         it('adds the password provider and revalidates tokens when a password is set', async () => {
             await testAllImplementations(async (auth, mode) => {
                 await auth.createUser({ uid: 'new-password', email: 'new-password@example.com' });
+                const idToken = await signIn(auth, mode, 'new-password');
+                const before = await auth.getUser('new-password');
 
+                // Every account has tokensValidAfterTime from creation, so the change must land in a later second to show it moved
+                await passOneSecond(mode);
                 const user = await auth.updateUser('new-password', { password: 'secret2' });
 
                 expect(user.providerData.map((info) => info.toJSON()), `providerData (${mode})`).toEqual([
                     { uid: 'new-password@example.com', email: 'new-password@example.com', providerId: 'password' },
                 ]);
                 expectRecentUtcString(user.tokensValidAfterTime, `tokensValidAfterTime (${mode})`);
+                // The emulator gives an account tokensValidAfterTime only with a password, so it has none to move from
+                if (mode === 'emulator') {
+                    expect(before.tokensValidAfterTime, `tokensValidAfterTime before (${mode})`).toBeUndefined();
+                } else {
+                    expect(Date.parse(user.tokensValidAfterTime!), `tokensValidAfterTime moved (${mode})`).toBeGreaterThan(Date.parse(before.tokensValidAfterTime!));
+                }
+                await expect(auth.verifyIdToken(idToken, true), `earlier ID token (${mode})`).rejects.toMatchObject({ code: 'auth/id-token-revoked' });
                 // The emulator counts a new password as refreshing the account
                 if (mode === 'emulator') {
-                    expectRecentUtcString(user.metadata.lastRefreshTime, `lastRefreshTime (${mode})`);
+                    expect(Date.parse(user.metadata.lastRefreshTime!), `lastRefreshTime moved (${mode})`).toBeGreaterThan(Date.parse(before.metadata.lastRefreshTime!));
                 } else {
-                    expect(user.metadata.lastRefreshTime, `lastRefreshTime (${mode})`).toBeNull();
+                    expect(user.metadata.lastRefreshTime, `lastRefreshTime unchanged (${mode})`).toBe(before.metadata.lastRefreshTime);
                 }
             });
         });

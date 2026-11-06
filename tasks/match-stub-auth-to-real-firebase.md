@@ -165,6 +165,10 @@ Additive: `StubAuthOptions.emailEnumerationProtection` and
 - Its expectations are real Firebase's. Each emulator difference is a
   `mode === 'emulator'` branch with a comment. The emulator's project gets email
   enumeration protection turned on, so its project pool matches.
+- The `updateUser` email and password tests sign in, wait a second, and check
+  that `tokensValidAfterTime` moved and the earlier ID token is revoked. Every
+  account now has the timestamp from creation, so "recent" alone proved nothing.
+  With the stub broken to keep the old value, both tests fail.
 - Real-mode limit: 20 s, from a worst measured test of 9.1 s, and over 11.7 s in
   an earlier run, against the 10 s default.
 - CI runs the real mode too (user, 6 November 2026). TeamCity's Integration build
