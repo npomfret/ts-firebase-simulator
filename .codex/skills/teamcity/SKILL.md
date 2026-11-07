@@ -233,9 +233,10 @@ features {
   - `ios_simulator` (quota 2) caps how many simulators boot at once across
     every project. Every leg that boots a simulator takes
     `readLock("ios_simulator")`.
-  - `high_cpu` (quota 2) caps how many heavy legs run at once across every
-    project. Every leg that boots a simulator or drives a real browser takes
-    `readLock("high_cpu")`; nothing else does. Compiles, archives, delivery and
+  - `high_cpu` (quota 1 since 2026-11-07, until the CI builds are more
+    stable; it was 2) caps how many heavy legs run at once across every
+    project. Every leg that boots a simulator, runs Mac UI tests or drives a
+    real browser takes `readLock("high_cpu")`; nothing else does. Compiles, archives, delivery and
     Ship legs, `swift test`, Docker suites, unit suites and composites take
     neither lock unless they boot a simulator or drive a browser. A leg takes
     `writeLock("high_cpu")` only when it must run alone, with the reason in a
