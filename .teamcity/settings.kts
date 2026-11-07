@@ -181,7 +181,7 @@ project {
     // detection are built on, so it outlives the artifacts.
     cleanup {
         baseRule {
-            artifacts(days = 7)
+            artifacts(days = 1)
             history(days = 30)
         }
     }
