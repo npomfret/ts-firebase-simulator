@@ -212,7 +212,7 @@ project {
     // detection are built on, so it outlives the artifacts.
     cleanup {
         baseRule {
-            artifacts(days = 1)
+            artifacts(days = 7)
             history(days = 30)
         }
     }
