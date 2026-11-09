@@ -9,3 +9,4 @@ test-reports/
 .codex/config.toml
 tmp/
 .claude/worktrees/
+.DS_Store
