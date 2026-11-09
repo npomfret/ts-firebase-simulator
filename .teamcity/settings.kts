@@ -37,6 +37,9 @@ fun BuildType.onTheMac(workspace: String) {
     params {
         param("env.TMPDIR", "%system.teamcity.build.tempDir%")
         param("system.teamcity.build.checkoutDir.expireHours", "0")
+        // npm writes a debug log for every run, the one to read when `npm ci` fails. Its default
+        // home is ~/.npm/_logs, shared by every build on the Mac and never published.
+        param("env.npm_config_logs_dir", "%teamcity.build.checkoutDir%/logs/npm")
     }
     vcs {
         root(DslContext.settingsRoot)
@@ -48,8 +51,21 @@ fun BuildType.onTheMac(workspace: String) {
 // Generic rather than the typed builder, following SuperFunMaxMusic: a wrong
 // parameter finds no reports and says so, where a wrong symbol stops the script
 // compiling.
+//
+// The artifacts are what a failed build leaves for diagnosis without a re-run: the JUnit report,
+// each step's whole console output (see logged) and npm's debug logs. All of it is written inside
+// the workspace this build emptied before checkout, so nothing from an earlier build can be
+// published. The key lives outside the checkout, where no rule here can reach; the exclusions
+// are for a copy someone might one day drop inside it.
 fun BuildType.keepsWhatVitestSaid(report: String) {
-    artifactRules = "test-reports/$report => test-reports"
+    artifactRules = """
+        +:test-reports/$report => test-reports
+        +:logs/** => logs
+        -:**/service-account-key.json
+        -:**/.env
+        -:**/.env.*
+        -:**/node_modules/**
+    """.trimIndent()
     features {
         feature {
             type = "xml-report-plugin"
@@ -59,6 +75,11 @@ fun BuildType.keepsWhatVitestSaid(report: String) {
         }
     }
 }
+
+// The step's command, with its whole console output also kept in logs/<log>.log. pipefail keeps
+// the command's exit status as the step's. bash by shebang, because /bin/sh need not know pipefail.
+fun logged(log: String, command: String) =
+    "#!/bin/bash\nset -euo pipefail\nmkdir -p logs\n$command 2>&1 | tee logs/$log.log"
 
 // Nightly as well as on push, and deliberately not withPendingChangesOnly: a
 // night with no commits is exactly when these earn their keep. Every dependency
@@ -93,27 +114,32 @@ val buildAndUnit = BuildType {
         "outside the checkout, so it cannot go red for a reason that is not ours."
     onTheMac("ts-firebase-simulator-build-and-unit")
     keepsWhatVitestSaid("unit.xml")
+    // What the bundle step built, to look inside when a consumer reports a broken build.
+    artifactRules += "\n+:dist/** => dist.zip"
     steps {
         script {
             name = "install"
-            scriptContent = "npm ci"
+            scriptContent = logged("install", "node --version && npm --version && npm ci")
         }
         script {
             name = "format"
-            scriptContent = "npm run format:check"
+            scriptContent = logged("format", "npm run format:check")
         }
         script {
             name = "typecheck"
-            scriptContent = "npm run build:check"
+            scriptContent = logged("typecheck", "npm run build:check")
         }
         script {
             name = "bundle"
-            scriptContent = "npx tsup"
+            scriptContent = logged("bundle", "npx tsup")
         }
         script {
             name = "unit"
-            scriptContent = "npx vitest run src/__tests__/unit " +
-                "--reporter=default --reporter=junit --outputFile.junit=test-reports/unit.xml"
+            scriptContent = logged(
+                "unit",
+                "npx vitest run src/__tests__/unit " +
+                    "--reporter=default --reporter=junit --outputFile.junit=test-reports/unit.xml",
+            )
         }
     }
     failureConditions {
@@ -156,12 +182,17 @@ val integration = BuildType {
         }
         script {
             name = "install"
-            scriptContent = "npm ci"
+            scriptContent = logged("install", "node --version && npm --version && npm ci")
         }
         script {
             name = "integration"
-            scriptContent = "npx vitest run src/__tests__/integration " +
-                "--reporter=default --reporter=junit --outputFile.junit=test-reports/integration.xml"
+            // The suite's console is what the build log already shows: it prints the test
+            // modes and HTTP statuses, never the key, the access token or the web API key.
+            scriptContent = logged(
+                "integration",
+                "npx vitest run src/__tests__/integration " +
+                    "--reporter=default --reporter=junit --outputFile.junit=test-reports/integration.xml",
+            )
         }
     }
     failureConditions {
