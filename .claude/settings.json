@@ -42,5 +42,14 @@
     "typesafe@typesafe-ai": true,
     "scripting@npomfret": true
   },
-  "enabledMcpjsonServers": ["gitnexus", "webstorm"]
+  "enabledMcpjsonServers": ["gitnexus", "webstorm"],
+  "extraKnownMarketplaces": {
+    "npomfret": {
+      "source": {
+        "source": "github",
+        "repo": "npomfret/agent-standards"
+      },
+      "autoUpdate": true
+    }
+  }
 }

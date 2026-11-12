@@ -1,18 +1,6 @@
 ---
 name: teamcity
-description: >-
-  The required recipe for every build this project runs on our TeamCity
-  server, ci.snowmonkey.co.uk: .teamcity/settings.kts, pom.xml, cli.json and
-  the scripts/teamcity.py shim. Load this before creating, changing,
-  renaming or reviewing a build configuration, its triggers, test reporting
-  or Apple build steps, and before attaching a project to the server. Covers
-  reaching the server only through scripts/teamcity.py, what may run in CI
-  and what may not (no Docker or live services), the fixed configuration
-  names, renaming with the existing uuid, legs plus an All Checks
-  composite, toolchain checks instead of agent requirements, the trigger
-  rules and staggered nightly, JUnit XML on the Tests tab, simulators and
-  Xcode locks, saying what a green build proves, and the server-side steps
-  handed to the user.
+description: Project conventions for TeamCity configuration on ci.snowmonkey.co.uk. Read when changing build DSL, steps, triggers, reporting or Apple builds, or attaching a project. Use teamcity-builds for diagnostics and build operations.
 ---
 
 ## TeamCity builds
@@ -43,9 +31,11 @@ are the reference; this is the part every build must get right.
 - The access token is a full-admin credential, in iCloud Drive under
   `projects/teamcity/`. Only the script reads it, and it travels only on curl's
   stdin: never in an argument, a remote shell string, a log or a repo.
-- The script is read-only, and stays that way. Changing anything on the server
-  (creating a project, attaching a repo, starting or cancelling a build) is the
-  user's decision. Prepare the exact steps and hand them over, as described
+- **Agents may trigger and rerun builds, cancel running or queued builds, and
+  reorder the build queue as needed to complete the current task.** These are
+  ordinary CI operations with standing authorization; do not ask the user to
+  confirm them or hand them back to the user to run.
+- Creating a project or attaching a repo still needs the user, as described
   under "Attaching it to the server" below.
 
 ### What may run

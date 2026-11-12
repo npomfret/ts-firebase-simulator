@@ -28,182 +28,96 @@ interfaces.
 
 ## Scope
 
-Do what was asked, and nothing more. Work that was invented rather than requested is why a task never reaches an end.
+Complete the requested work and verify it. Include the dependent changes needed to make it work, such as affected callers, tests or migrations.
 
-### Never invent work
-
-- Never invent a requirement. If the request does not state it and the project does not already require it, it is not a requirement.
-- Never widen the scope of a change. The request sets the boundary; a related file, a neighbouring function or a second caller is outside it unless the change cannot work without them.
-- Never start adjacent work you thought of yourself: a refactor you noticed, a test you would like to exist, a rename, a tidy-up, a dependency bump, a doc you would have written differently. "While I was in there" is not a reason.
-- Never invent edge cases or failure scenarios. Before adding special handling, a fallback or a test for one, cite evidence that it exists: observed data, an actual incident, or a reproducible failure. "It could happen" is not evidence.
-- Never treat a suggestion the user has not answered as approval. Silence is not yes, and neither is a suggestion you made yourself.
-
-### Suggest instead
-
-- Noticing work is not permission to do it. Say what you noticed in one line, and stop.
-- Put suggestions at the end of the report, after what was actually done, and keep them separate from it so the two are never confused.
-- One line each. A suggestion that needs a paragraph is a proposal, and a proposal is asked about before it is written, not after.
-- Ask when the request is ambiguous. Do not resolve an ambiguity by building both sides, by building the larger one, or by building the one you find more interesting.
-
-### Finish what was asked
-
-This is not licence to stop early, and scope discipline is not an excuse for leaving something broken.
-
-- A change is finished when what was asked works and has been verified — not when nothing more can be thought of, and not when the first part of it compiles.
-- Work the change makes necessary is inside the scope, not outside it: a caller the new signature breaks, a test the change invalidates, a migration the schema now needs. Doing that is finishing the job, not expanding it.
-- If the requested change cannot be made without work that was not requested, say so and wait. Do not do it silently, and do not abandon the request because of it.
-- Report what was done and what was verified. Do not report intentions, or work you decided against.
+- Use the request and existing project requirements as the boundary. Leave unrelated refactors, renames, cleanup, dependency bumps and documentation changes for separate work.
+- Add special handling or tests for a failure scenario when there is evidence for it: observed data, an incident or a reproducible failure.
+- Suggest adjacent work briefly at the end of the report; continue the current task. An unanswered suggestion is not approval.
+- Ask when different interpretations would lead to materially different work. If a necessary change exceeds the authorized scope, explain the concrete dependency and wait for a decision.
+- Finish when the requested behavior works and its verification passes. Report what changed, the evidence, and any remaining blocker.
 
 *Generated from `npomfret/agent-standards`. Edit the standard there, not this copy.*
 
 ## Running commands
 
-How you run commands, and what you ask the user to run. Writing a script that stays in the project is the `scripting` skill's subject; load it before writing one.
+Run commands yourself unless they require the user's login, password, sudo, device or installation action. Load the `scripting` skill before writing a script the project keeps.
 
-### Never hand the user a long command
-
-- Run commands yourself. Ask the user to run something only when it needs them: a login, a password, `sudo`, a device in their hand, an install.
-- Never ask the user to type or paste a long command: anything over one line, any chain of `&&`, `;` or `|`, a heredoc, or more than about 80 characters.
-- Write it instead to a new executable script in the project's `tmp/` folder, named for what it does (`tmp/install-shellcheck.sh`). Give it `#!/usr/bin/env bash`, `set -euo pipefail` and a comment saying what it does and why. Have it log its detail to a file under `tmp/logs/` and print that path.
-- Show the user the script, then ask them to run it with `! tmp/<name>.sh`, so its output lands in the conversation. Read its log afterwards rather than asking what happened.
-- One short command, such as `! brew install shfmt`, is given as it is.
-
-### Keep verbose output out of the console
-
-- A command whose output may run past a screen, such as a build, a test suite, an install or a data run, writes to a log file under `tmp/logs/` and you read the parts you need with `tail`, `grep` or a line range. Never let thousands of lines into the conversation.
-- Never add a verbose or debug flag just to watch. Read the log file.
-- When reporting a run, quote the lines that matter and give the log path. Never paste the log.
+- When the user must run a command, give them one short command. For anything multiline, chained or longer than about 80 characters, write an executable `tmp/<purpose>.sh` with `#!/usr/bin/env bash`, `set -euo pipefail`, a purpose comment and logging under `tmp/logs/`. Show it, ask them to run `! tmp/<purpose>.sh`, then read its log.
+- Keep lengthy build, test, install and data output in `tmp/logs/`. Read relevant portions and report the useful lines with the log path. Do not enable verbose/debug output merely to watch a run.
 
 *Generated from `npomfret/agent-standards`. Edit the standard there, not this copy.*
 
 ## State and dependencies
 
-Static application state is not allowed. Code never obtains its dependencies or configuration from singletons, globals, static accessors or the environment. At startup, one composition root validates the configuration, constructs every dependency, and passes each consumer exactly what it needs, normally through required constructor parameters. This rule has no exceptions, and passing tests do not excuse a breach.
+Construct dependencies at the program's entry point and pass each consumer the specific collaborators and configuration it uses. Static application state is not allowed.
 
-### Forbidden
+### Prefer
 
-- An exported, preconstructed instance (`export const store = new Store()`), a lazy `getInstance()`, a global accessor (`getLogger()`, `getRuntimeSecrets()`), or a global `configure()`/`reset()` lifecycle. Wrapping global access in a helper does not make the dependency explicit.
-- Mutable state in module variables (`let`, `var`), static properties, shared instances or global caches.
-- Configuration or a service instance exposed through a static field, a global object or a module-level export, even when it is immutable.
-- Obtaining a collaborator from a service locator, registry, application delegate or other global.
-- Passing a general container or a bag of dependencies inward. Each consumer receives the specific things it uses.
-- A constructor default that creates a production dependency (`constructor(api = apiClient)` or `= new HttpClient()`), property injection after construction, or hidden initialisation. A constructed object is ready to use.
+- Required constructor parameters for classes and explicit parameters for functions. Constructed objects are ready to use; per-call data belongs in method arguments.
+- Narrow, application-owned interfaces for external capabilities such as network, storage, time, randomness and scheduling. Put unavoidable platform globals behind injected adapters.
+- Runtime-owned instances with a defined lifetime, shared by passing references. Use an injected narrow factory when construction depends on later request/session data.
+- Immutable values and fields, including owned collections and nested data. Use `const` in JavaScript/TypeScript, `let` in Swift, or the language's equivalent; an immutable reference alone does not protect its contents.
+- Minimal private mutable state with a behavioral reason, one owner and a validity/invalidation policy. Keep transitions consistent across failure, cancellation and asynchronous work; prevent stale work from overwriting newer state.
 
-### Required
+### Avoid
 
-- Classes take their collaborators as required constructor parameters and keep them on the instance. Functions take them as explicit parameters. Per-call data goes in method arguments.
-- The composition root (`main`, the server bootstrap, the app's root component) builds dependencies before their consumers. Manual wiring is enough; a DI framework is not needed.
-- External capabilities are injected as narrow, application-owned interfaces: network, database, filesystem, time, randomness, IDs, scheduling, notifications, analytics, configuration. Platform global state that cannot be avoided sits behind an injected adapter.
-- One instance owned by the runtime may be passed to several consumers. That is shared ownership with a defined lifetime, not a singleton. Something that must be created later from request or session data comes from a narrow factory injected at startup.
-- Immutable constants, stateless functions and cheap, deterministic, side-effect-free value construction are allowed. Configuration and service instances are not constants, however immutable.
+- Singletons, module/static service instances or configuration, global accessors, service locators and global configure/reset lifecycles.
+- Hidden construction through default dependencies or property injection, and passing a general dependency container inward.
+- Reading configuration in behavior code or at module import time. The entry point reads and validates its supplied environment/files once into typed immutable configuration, then passes only the needed settings inward.
+- Copying an existing global-state pattern into new code. Removing existing state is separate work unless requested or necessary for the task.
 
-### Environment variables and configuration
+Immutable constants, stateless functions and deterministic value construction are allowed; service instances and runtime configuration are not constants. If a change would require new static application state, explain the missing construction boundary instead of adding a stopgap.
 
-- Environment variables, `.env` files and equivalent configuration sources are allowed. The source is supplied explicitly to the program's entry point, which reads and validates it immediately at startup into typed, immutable configuration objects.
-- Those objects are passed to the code that depends on them, normally through required constructor parameters. Each consumer gets the settings it needs, not the whole application config.
-- Configuration is never accessed statically. Never load a `.env` file into global state for consumers to read later, and never read `process.env`, `os.environ`, a dotenv load or a discovered config file in behaviour code or at module import time.
-- Tests construct configuration in memory. They never edit environment variables or depend on a developer's `.env`.
-
-### Immutable by default
-
-- Make fields immutable wherever possible: set them during construction and use `readonly`, `final`, `let` or the language's equivalent. Injected collaborators and configuration never change for the life of the instance.
-- Prefer immutable values, and return a new value when data changes.
-- A non-reassignable reference does not make what it points to immutable. Protect owned data from mutation through aliases, constructor inputs, returned collections and nested objects, with immutable representations, defensive copies or read-only views as the contract needs. A read-only view does not stop another holder of the underlying object from changing it.
-- Mutable state needs a concrete behavioural reason. Keep it minimal and private, with one owner and a defined lifetime; derive values rather than store state that can drift.
-- Change it only through intent-based operations that preserve its invariants, never public fields or general setters. Keep multi-field updates consistent through failure, cancellation and partial completion, and never expose an intermediate invalid state.
-- Control concurrent and asynchronous access. Recheck invariants across suspension points, and never let stale work overwrite newer state.
-- Never add mutability for convenient wiring, later initialisation, test setup, or a cache without a stated need and invalidation policy. For every mutable field, be able to say why it must change, who may change it and how validity is kept.
-- None of this relaxes the ban on static application state.
-
-### Tests
-
-- A test constructs the unit directly with in-memory configuration and fakes, and calls it without booting the application.
-- Two instances with different configuration and fakes must coexist in one process without interfering.
-- Mutable state is tested through its meaningful transitions, failure paths and concurrency risks, observed through behaviour, with independent instances per test.
-- Tests never patch modules, reset singletons, call static setters or change the environment to supply dependencies. If a test needs to, fix the production construction instead of adding test machinery.
-
-### Existing code is not a precedent
-
-- Where a project already has static state or reads the environment deep in its code, do not copy it, extend it or add to it, however much of it there is. New code takes its dependencies as parameters even when the code around it imports globals.
-- Removing existing static state is a change of its own. Do it when asked; otherwise name it in one line at the end of the report.
-- If a change cannot be made without new static state, for instance because there is no composition root to create the new object in, stop and say so. Never add the global as a stopgap.
+Tests construct units with in-memory configuration and fakes. Independent instances must coexist without interference. Exercise meaningful state transitions through behavior; do not supply dependencies by patching modules, changing the environment or resetting globals.
 
 *Generated from `npomfret/agent-standards`. Edit the standard there, not this copy.*
 
 ## Test timeouts
 
-The application must be fast, and the tests are where slowness shows. Every test timeout and every asynchronous wait is short, so a slow response fails a test instead of hiding inside a generous limit.
+Use short, explicit limits so slow or stalled work fails promptly. Run local builds and tests one at a time across agents, with one test worker; wait for any test run you control to finish before starting another.
 
-### Short by default
-
-- Set the limits explicitly: for each test case, its setup and teardown, drivers and page objects, and every framework wait (`waitFor`, `waitForExistence`, `expect.poll`, `.timeLimit` and the like). Never inherit a framework's generous default, and never allow an unlimited wait.
-- Unit tests are very fast. Each project sets a short budget per test type; as a guide, an in-memory unit test needs well under a second.
-- A wait in an integration, UI or end-to-end test is tied to how long a user would expect that response to take. Being an end-to-end test does not justify a long one.
-- Add outer limits too: per suite and per CI job, sized to the suite's real runtime, so a hang the test runner cannot interrupt still fails promptly.
-- A timeout fails the check and stops the stalled work. Its failure says which test or phase timed out, the elapsed time, the limit, and what state it observed.
-
-### Raising a limit needs the user
-
-- Never introduce a longer default, add a longer override, or increase an existing timeout without the user's explicit approval first.
-- When asking, name the specific operation, the evidence for how long it really takes, the limit you propose, and what that delay means for users.
-- An approved exception covers only that operation. Record it beside the limit, and never relax a shared default to accommodate it.
-- When something is unexpectedly slow, investigate the slowness. Raising the timeout is not a fix.
-
-### Calibrate to measured time, in proportion
-
-- A shared CI server is busier than a developer's machine, and its load is not known in advance, so an operation can take several times longer there. Learning those timings and setting limits from them is normal work, not a failure.
-- Set a limit from the operation's measured time on the slowest place it runs, normally the CI agent, plus a proportionate margin. An action that takes 50 ms locally and 700 ms on a busy CI agent may get about a second. It never gets ten: a limit far beyond the measured worst case hides a stalled or broken operation and makes every failure, and the build, slow.
-- A raise for CI load is still a raise. It needs the user's approval, with the local and CI measurements as its evidence.
+- Set budgets for tests, setup/teardown, driver waits, suites and CI jobs. Use an outer watchdog when the framework cannot express the required limit. In-memory unit tests should take well under a second; UI waits should match an acceptable user response time.
+- A timeout stops the stalled work and reports the phase, elapsed time, limit and observed state.
+- Calibrate against measured timings on the slowest environment, usually a busy CI agent, with a proportionate margin. Investigate unexpected slowness rather than masking it.
+- Increasing any limit requires the user's approval. Give the measured timings, proposed limit and user impact; record the approved exception beside that operation. Keep shared defaults unchanged.
 
 *Generated from `npomfret/agent-standards`. Edit the standard there, not this copy.*
 
 ## Review before commit
 
-After any significant piece of work, and before committing it, have it reviewed by an agent. A passing build and green tests are not a review.
+Have significant work independently reviewed by an agent before committing. This includes behavior, refactors, tests, configuration and tooling; trivial wording, formatting and task-file edits need no review.
 
-- Significant means anything beyond a trivial edit: new or changed behaviour, a refactor, a new type, boundary or dependency, or a change to tests, configuration or tooling. A typo, a formatting-only change or a task-file edit needs no review.
-- Spawn the project's own reviewer agent where it has one that fits the change, or several in parallel where the change spans them. Otherwise spawn a general agent as the reviewer.
-- Hand the reviewer the success criteria, the revision range or file list, and the diff itself. Never send it just a name to go and find.
-- Tell it to skip the minor and the trivial, such as style, naming preferences and nits, and to report only real problems: bugs, broken contracts, missed requirements, breaches of the project's rules, and tests that prove nothing.
-- Fix every real finding, or say why it is wrong, before committing. Never commit with a finding unanswered.
-- In the report, say that the review ran, what it found and what was done about each finding.
-- This adds to any approval the project requires from the user. It never replaces one.
+- Use an appropriate project reviewer, or a general reviewer. Give it the success criteria, file list/revision range and the actual diff.
+- Ask for substantive problems with evidence: bugs, broken contracts, missed requirements, rule violations and ineffective tests. Skip style preferences and nits.
+- Resolve each finding or explain why it is incorrect before committing. Report the review result and how findings were handled.
+
+Passing tests do not replace review, and agent review does not replace any required user approval.
 
 *Generated from `npomfret/agent-standards`. Edit the standard there, not this copy.*
 
 ## Git
 
-History stays linear, and parallel work happens in worktrees, never in branches switched in a shared checkout. Other agents are working in this checkout at the same time as you, with uncommitted changes of their own.
+Keep history linear and protect other agents' work. The shared checkout stays on its default branch; parallel work uses worktrees.
 
-### Rebase, never merge
+- Update the shared checkout with `git pull --ff-only`. If branches have diverged, use `git pull --rebase`. Rebase worktrees onto the default branch and resolve conflicts commit by commit.
+- Use `git merge --ff-only` to land work that is already rebased. Do not create merge commits or replace a failed rebase with a merge.
+- Do not stash, discard or commit someone else's changes. If their work blocks an operation, use a worktree, wait or report the blocker.
+- Commit and push scoped, verified work after independent review without asking again, unless the user requests otherwise for the task.
+- Do not force-push the default branch. Use `--force-with-lease` only for your own branch after rebasing it.
 
-- Never run `git merge` to combine work, and never make a merge commit. The one exception is `git merge --ff-only`, which moves a branch forward without making one.
-- Never a plain `git pull`. In the shared checkout, `git pull --ff-only`; only if that refuses because the branches have diverged, `git pull --rebase`. In a worktree, `git rebase <base>`.
-- If a rebase hits a conflict, resolve it commit by commit and `git rebase --continue`. Never `git rebase --abort` and merge instead.
-- If git refuses because of uncommitted changes that are not yours, never stash, commit or discard them to get past it. Do the work in a worktree instead, or wait, or report it.
-- Never force-push the default branch. `git push --force-with-lease` only on a branch of your own that you rebased after pushing.
+### Worktrees
 
-### Worktrees, not branches
+Use a worktree when the checkout contains others' changes or the work needs more than one commit. Otherwise work directly on the default branch and stage only your files.
 
-- Never create, check out or switch to a branch in the shared checkout. It stays on the default branch, because switching changes every file under everyone else. `git worktree add -b` is the one way a branch is made.
-- Use a worktree when `git status` shows changes that are not yours, or when the work will take more than one commit. Otherwise commit straight on the default branch, staging only your own files.
-- Give each worktree its own folder under `.claude/worktrees/<name>`:
-  - In Claude Code, use `EnterWorktree`, or start a subagent with `isolation: "worktree"`.
-  - Otherwise, from the shared checkout, `git worktree add -b wt/<name> .claude/worktrees/<name> main` (use the repo's default branch if it is not `main`).
-- A project rule to work on main, or not to branch, means the shared checkout stays on its default branch. A worktree on its own short-lived branch is how work is isolated under that rule.
-- Build, test and commit inside the worktree. Never edit the shared checkout's files from it.
-- A subagent working in a worktree commits there and stops. The agent that started it lands the work with the steps below and removes the worktree. Never `git merge` a `worktree-*` branch.
+Create worktrees under `.claude/worktrees/<name>`. Use `EnterWorktree`/agent isolation in Claude Code, or `git worktree add -b wt/<name> .claude/worktrees/<name> <default-branch>`. Do not switch branches in the shared checkout. A project instruction to work on main refers to that shared checkout.
 
-### Landing a worktree's commits
+Build, test and commit inside the worktree. A subagent commits there and returns the result; its parent lands the work.
 
-1. Commit everything in the worktree. `git rebase` and `git worktree remove` both refuse while it has uncommitted changes.
-2. In the shared checkout, `git branch --show-current` must print the default branch; if it does not, stop and report it. Then `git pull --ff-only`, so the default branch is current.
-3. In the worktree, `git rebase main`, so its commits sit on top of it.
-4. In the shared checkout, `git merge --ff-only <worktree-branch>`.
-   - If git refuses because the default branch moved, go back to step 3.
-   - If git refuses because uncommitted changes that are not yours would be overwritten, wait or report it. Never stash or discard them, and never fall back to a merge commit.
-5. Leave the worktree first (in Claude Code, `ExitWorktree`), then, from the shared checkout, `git worktree remove .claude/worktrees/<name>` and `git branch -d <worktree-branch>`. For a worktree whose work you are dropping on purpose, `git branch -D`.
+### Landing
 
-- A worktree is removed as soon as its commits have landed or been dropped. Remove only worktrees you made, and report any other stale ones in one line at the end.
+1. Commit the worktree's changes.
+2. Confirm the shared checkout is on the default branch; otherwise stop and report it. Update it with `git pull --ff-only`.
+3. Rebase the worktree onto the updated default branch, then land it from the shared checkout with `git merge --ff-only <worktree-branch>`. Rebase again if the default branch moved.
+4. Leave and remove the worktree, then delete its branch. Remove only worktrees you created, once their work has landed or been deliberately dropped; report other apparently stale worktrees without removing them.
 
 *Generated from `npomfret/agent-standards`. Edit the standard there, not this copy.*

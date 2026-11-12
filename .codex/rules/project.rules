@@ -2,13 +2,7 @@
 # Syntax: Starlark. decision precedence: forbidden > prompt > allow.
 # Loads only when this project is trusted.
 
-# ---- git: everything except merge ----
-prefix_rule(
-    pattern = ["git", "merge"],
-    decision = "forbidden",
-    justification = "Merging is reserved for the human.",
-)
-
+# ---- git history safeguards ----
 # Global git flags sit between "git" and the subcommand, so exact-prefix
 # matching would miss e.g. `git -C . merge`. Route those through a prompt. -P and
 # --no-pager only choose how output is printed, conceal nothing, and were the two
