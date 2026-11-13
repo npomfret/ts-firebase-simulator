@@ -97,27 +97,30 @@ Passing tests do not replace review, and agent review does not replace any requi
 
 ## Git
 
-Keep history linear and protect other agents' work. The shared checkout stays on its default branch; parallel work uses worktrees.
+Work is complete only when its verified, reviewed commits have landed on `main` and been pushed to its remote. Use the existing default branch where it has another name, such as `master`. A local commit, worktree result or open PR is not completion; report any landing or push blocker explicitly.
+
+Keep history linear and protect other agents' work. The shared checkout stays on its default branch; isolated work uses detached worktrees instead of feature branches.
 
 - Update the shared checkout with `git pull --ff-only`. If branches have diverged, use `git pull --rebase`. Rebase worktrees onto the default branch and resolve conflicts commit by commit.
 - Use `git merge --ff-only` to land work that is already rebased. Do not create merge commits or replace a failed rebase with a merge.
 - Do not stash, discard or commit someone else's changes. If their work blocks an operation, use a worktree, wait or report the blocker.
 - Commit and push scoped, verified work after independent review without asking again, unless the user requests otherwise for the task.
-- Do not force-push the default branch. Use `--force-with-lease` only for your own branch after rebasing it.
+- Do not force-push the default branch.
 
 ### Worktrees
 
 Use a worktree when the checkout contains others' changes or the work needs more than one commit. Otherwise work directly on the default branch and stage only your files.
 
-Create worktrees under `.claude/worktrees/<name>`. Use `EnterWorktree`/agent isolation in Claude Code, or `git worktree add -b wt/<name> .claude/worktrees/<name> <default-branch>`. Do not switch branches in the shared checkout. A project instruction to work on main refers to that shared checkout.
+Create detached worktrees with `git worktree add --detach .claude/worktrees/<name> <default-branch>`. Do not create feature branches or switch branches in the shared checkout.
 
-Build, test and commit inside the worktree. A subagent commits there and returns the result; its parent lands the work.
+Build, test and commit inside the worktree. A subagent commits there and returns the commit ID; its parent remains responsible for landing and pushing it.
 
 ### Landing
 
 1. Commit the worktree's changes.
 2. Confirm the shared checkout is on the default branch; otherwise stop and report it. Update it with `git pull --ff-only`.
-3. Rebase the worktree onto the updated default branch, then land it from the shared checkout with `git merge --ff-only <worktree-branch>`. Rebase again if the default branch moved.
-4. Leave and remove the worktree, then delete its branch. Remove only worktrees you created, once their work has landed or been deliberately dropped; report other apparently stale worktrees without removing them.
+3. Rebase the worktree onto the updated default branch. Get its new commit ID with `git rev-parse HEAD`, then land that ID from the shared checkout with `git merge --ff-only <commit-id>`. Rebase again if the default branch moved.
+4. Push the default branch and confirm the remote contains the landed commits. If the push is rejected, reconcile with the remote using rebase and retry; do not report completion while delivery is blocked.
+5. Leave and remove the worktree once its commits have landed and been pushed, or have been deliberately dropped. Remove only worktrees you created; report other apparently stale worktrees without removing them.
 
 *Generated from `npomfret/agent-standards`. Edit the standard there, not this copy.*
