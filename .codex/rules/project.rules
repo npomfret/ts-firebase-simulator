@@ -4,7 +4,7 @@
 
 # ---- git history safeguards ----
 # Global git flags sit between "git" and the subcommand, so exact-prefix
-# matching would miss e.g. `git -C . merge`. Route those through a prompt. -P and
+# matching would miss e.g. `git -C . reset --hard`. Route those through a prompt. -P and
 # --no-pager only choose how output is printed, conceal nothing, and were the two
 # that came up in ordinary work, so they are no longer listed.
 prefix_rule(
