@@ -99,12 +99,12 @@ Passing tests do not replace review, and agent review does not replace any requi
 
 Work is complete only when its verified, reviewed commits have landed on `main` and been pushed to its remote. Use the existing default branch where it has another name, such as `master`. A local commit, worktree result or open PR is not completion; report any landing or push blocker explicitly.
 
-Keep history linear and protect other agents' work. The shared checkout stays on its default branch; isolated work uses detached worktrees instead of feature branches.
+Protect other agents' work. The shared checkout stays on its default branch; isolated work uses detached worktrees instead of feature branches.
 
-- Update the shared checkout with `git pull --ff-only`. If branches have diverged, use `git pull --rebase`. Rebase worktrees onto the default branch and resolve conflicts commit by commit.
-- Use `git merge --ff-only` to land work that is already rebased. Do not create merge commits or replace a failed rebase with a merge.
+- When pulling, use `git pull --rebase`, not a merge. Resolve rebase conflicts commit by commit.
+- Land rebased worktrees with `git merge --ff-only`. Agents are responsible for landing their own work.
 - Do not stash, discard or commit someone else's changes. If their work blocks an operation, use a worktree, wait or report the blocker.
-- Commit and push scoped, verified work after independent review without asking again, unless the user requests otherwise for the task.
+- Commit, land and push scoped, verified work after required review without asking again, unless the user requests otherwise for the task.
 - Do not force-push the default branch.
 
 ### Worktrees
@@ -118,7 +118,7 @@ Build, test and commit inside the worktree. A subagent commits there and returns
 ### Landing
 
 1. Commit the worktree's changes.
-2. Confirm the shared checkout is on the default branch; otherwise stop and report it. Update it with `git pull --ff-only`.
+2. Confirm the shared checkout is on the default branch; otherwise stop and report it. Update it with `git pull --rebase`.
 3. Rebase the worktree onto the updated default branch. Get its new commit ID with `git rev-parse HEAD`, then land that ID from the shared checkout with `git merge --ff-only <commit-id>`. Rebase again if the default branch moved.
 4. Push the default branch and confirm the remote contains the landed commits. If the push is rejected, reconcile with the remote using rebase and retry; do not report completion while delivery is blocked.
 5. Leave and remove the worktree once its commits have landed and been pushed, or have been deliberately dropped. Remove only worktrees you created; report other apparently stale worktrees without removing them.
