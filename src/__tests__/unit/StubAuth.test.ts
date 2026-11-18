@@ -70,6 +70,43 @@ describe('StubAuth', () => {
             await expect(auth.updateUser('flaky', { displayName: 'After' })).resolves.toMatchObject({ displayName: 'After' });
         });
 
+        it('makes deleteUser throw and leaves the user in place, then recovers', async () => {
+            auth.seedUser({ uid: 'flaky' });
+            auth.seedUser({ uid: 'steady' });
+            const outage = new Error('Auth unavailable');
+
+            auth.failNext('deleteUser', 'flaky', 2, outage);
+
+            await expect(auth.deleteUser('steady')).resolves.toBeUndefined();
+            await expect(auth.deleteUser('flaky')).rejects.toBe(outage);
+            expect(auth.remainingFailures('deleteUser', 'flaky')).toBe(1);
+            await expect(auth.deleteUser('flaky')).rejects.toBe(outage);
+            expect(auth.remainingFailures('deleteUser', 'flaky')).toBe(0);
+            await expect(auth.getUser('flaky')).resolves.toMatchObject({ uid: 'flaky' });
+            await expect(auth.deleteUser('flaky')).resolves.toBeUndefined();
+            await expect(auth.getUser('flaky')).rejects.toMatchObject({ code: 'auth/user-not-found' });
+        });
+
+        it('makes revokeRefreshTokens throw and leaves tokens valid, then recovers', async () => {
+            vi.useFakeTimers({ toFake: ['Date'] });
+            vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'));
+            auth.seedUser({ uid: 'flaky' });
+            auth.seedUser({ uid: 'steady' });
+            const idToken = auth.issueIdToken('flaky');
+            const outage = new Error('Auth unavailable');
+            vi.setSystemTime(new Date('2026-01-01T00:00:05.000Z'));
+
+            auth.failNext('revokeRefreshTokens', 'flaky', 1, outage);
+
+            await expect(auth.revokeRefreshTokens('steady')).resolves.toBeUndefined();
+            await expect(auth.revokeRefreshTokens('flaky')).rejects.toBe(outage);
+            expect(auth.remainingFailures('revokeRefreshTokens', 'flaky')).toBe(0);
+            await expect(auth.verifyIdToken(idToken, true)).resolves.toMatchObject({ uid: 'flaky' });
+            await expect(auth.revokeRefreshTokens('flaky')).resolves.toBeUndefined();
+            await expect(auth.verifyIdToken(idToken, true)).rejects.toMatchObject({ code: 'auth/id-token-revoked' });
+            vi.useRealTimers();
+        });
+
         it('affects only the given operation and user', async () => {
             auth.seedUser({ uid: 'flaky' });
             auth.seedUser({ uid: 'steady' });

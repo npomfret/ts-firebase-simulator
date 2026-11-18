@@ -54,7 +54,7 @@ export interface StubTenantOptions {
 }
 
 /** The operations `failNext` can make fail */
-export type FailableAuthOperation = 'getUser' | 'updateUser';
+export type FailableAuthOperation = 'getUser' | 'updateUser' | 'deleteUser' | 'revokeRefreshTokens';
 
 interface StoredUser {
     uid: string;
@@ -559,6 +559,7 @@ export abstract class StubPoolAuth implements IAuth {
     }
 
     async deleteUser(uid: string): Promise<void> {
+        this.#throwIfFailing('deleteUser', uid);
         this.#pool.requireUser(uid);
         this.#pool.users.delete(uid);
     }
@@ -628,6 +629,7 @@ export abstract class StubPoolAuth implements IAuth {
      * signed in before it are revoked, and any signed in during it survive
      */
     async revokeRefreshTokens(uid: string): Promise<void> {
+        this.#throwIfFailing('revokeRefreshTokens', uid);
         const user = this.#pool.requireUser(uid);
         this.#pool.users.set(uid, { ...user, validSinceSeconds: this.#authority.nowSeconds() });
     }
