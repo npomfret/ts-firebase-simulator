@@ -6,7 +6,6 @@ dist/
 service-account-key.json
 test-reports/
 .gitnexus/
-.codex/config.toml
 tmp/
 .claude/worktrees/
 .DS_Store

@@ -52,13 +52,23 @@ def candidates(plugins: Path):
     yield from sorted(plugins.glob("marketplaces/*/plugins/teamcity/scripts/teamcity.py"))
 
 
+def select_cli(plugins: Path, project: Path) -> Path | None:
+    for candidate in installed(plugins):
+        if candidate.is_file():
+            return candidate
+    bundled = project / ".codex/agent-standards/plugins/teamcity/scripts/teamcity.py"
+    if bundled.is_file():
+        return bundled
+    return next((candidate for candidate in candidates(plugins) if candidate.is_file()), None)
+
+
 def main() -> int:
     plugins = Path.home() / ".claude" / "plugins"
-    for candidate in candidates(plugins):
-        if candidate.is_file():
-            sys.argv[0] = str(candidate)
-            runpy.run_path(str(candidate), run_name="__main__")
-            return 0
+    candidate = select_cli(plugins, Path(__file__).resolve().parents[1])
+    if candidate is not None:
+        sys.argv[0] = str(candidate)
+        runpy.run_path(str(candidate), run_name="__main__")
+        return 0
     sys.exit(
         "The shared TeamCity CLI is not on this machine. Install it with:\n"
         "  claude plugin marketplace add npomfret/agent-standards\n"
