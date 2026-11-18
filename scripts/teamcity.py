@@ -6,19 +6,15 @@ Copy this to `scripts/teamcity.py` in a project. The implementation lives in the
 `npm run tc:*` behaves the same for a person at a shell and for an agent inside
 a session. Everything project-specific is `.teamcity/cli.json`.
 
-Set TEAMCITY_CLI to override the search.
+Update the installed plugin through Claude's supported plugin commands.
 """
 
 from __future__ import annotations
 
 import json
-import os
 import runpy
 import sys
 from pathlib import Path
-
-PLUGINS = Path.home() / ".claude" / "plugins"
-
 
 def version_of(path: Path) -> tuple:
     """The cache directory's version, as something that sorts numerically."""
@@ -26,7 +22,7 @@ def version_of(path: Path) -> tuple:
     return tuple(int(p) if p.isdigit() else -1 for p in parts)
 
 
-def installed():
+def installed(plugins: Path):
     """Where this machine says the plugin is installed, newest record first.
 
     This is the only authority on which copy is current. A cache directory
@@ -34,7 +30,7 @@ def installed():
     marketplace sorts ahead of the live one as readily as behind it.
     """
     try:
-        data = json.loads((PLUGINS / "installed_plugins.json").read_text())
+        data = json.loads((plugins / "installed_plugins.json").read_text())
     except (OSError, ValueError):
         return
     for key, entries in (data.get("plugins") or {}).items():
@@ -45,25 +41,20 @@ def installed():
                 yield Path(entry["installPath"]) / "scripts" / "teamcity.py"
 
 
-def candidates():
-    override = os.environ.get("TEAMCITY_CLI")
-    if override:
-        yield Path(override).expanduser()
-    root = os.environ.get("CLAUDE_PLUGIN_ROOT")
-    if root:
-        yield Path(root) / "scripts" / "teamcity.py"
-    yield from installed()
+def candidates(plugins: Path):
+    yield from installed(plugins)
     # Then whatever is cached, by version rather than by path: sorting the paths
     # ranks the marketplace name ahead of the version, which is how a retired
     # marketplace's 1.0.0 came to shadow the live 1.0.1.
     yield from sorted(
-        PLUGINS.glob("cache/*/teamcity/*/scripts/teamcity.py"), key=version_of, reverse=True
+        plugins.glob("cache/*/teamcity/*/scripts/teamcity.py"), key=version_of, reverse=True
     )
-    yield from sorted(PLUGINS.glob("marketplaces/*/plugins/teamcity/scripts/teamcity.py"))
+    yield from sorted(plugins.glob("marketplaces/*/plugins/teamcity/scripts/teamcity.py"))
 
 
 def main() -> int:
-    for candidate in candidates():
+    plugins = Path.home() / ".claude" / "plugins"
+    for candidate in candidates(plugins):
         if candidate.is_file():
             sys.argv[0] = str(candidate)
             runpy.run_path(str(candidate), run_name="__main__")
@@ -71,8 +62,7 @@ def main() -> int:
     sys.exit(
         "The shared TeamCity CLI is not on this machine. Install it with:\n"
         "  claude plugin marketplace add npomfret/agent-standards\n"
-        "  claude plugin install teamcity@npomfret\n"
-        "or point TEAMCITY_CLI at a checkout of agent-standards."
+        "  claude plugin install teamcity@npomfret"
     )
 
 

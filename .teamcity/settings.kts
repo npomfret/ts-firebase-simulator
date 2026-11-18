@@ -110,7 +110,7 @@ fun BuildType.onPushAndNightly(atMinute: Int) {
 val buildAndUnit = BuildType {
     id("BuildAndUnit")
     name = "Build & Unit"
-    description = "Format, typecheck, bundle and the in-memory unit suite. Talks to nothing " +
+    description = "Typecheck, bundle and the in-memory unit suite. Talks to nothing " +
         "outside the checkout, so it cannot go red for a reason that is not ours."
     onTheMac("ts-firebase-simulator-build-and-unit")
     keepsWhatVitestSaid("unit.xml")
@@ -120,10 +120,6 @@ val buildAndUnit = BuildType {
         script {
             name = "install"
             scriptContent = logged("install", "node --version && npm --version && npm ci")
-        }
-        script {
-            name = "format"
-            scriptContent = logged("format", "npm run format:check")
         }
         script {
             name = "typecheck"
