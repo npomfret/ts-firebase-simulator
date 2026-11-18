@@ -21,6 +21,7 @@ import signal
 import subprocess
 import sys
 import time
+import uuid
 
 
 def translated(text):
@@ -171,15 +172,19 @@ def run_command(command, payload, root, plugin_root, timeout, audit):
     return process.returncode, stdout, stderr
 
 
-def security_guidance(root, runtime, event, events, audit):
+def security_guidance(root, runtime, event, events, audit, review):
     """Use the enabled provider's pure rules/prompts with native Codex review.
 
     Claude's SDK installer and credential lookup are not a Codex runtime. Keep
     pattern checks in-process and run the same investigation/refutation guidance
-    in a bounded, read-only native session. Disable its hooks to avoid recursion.
+    in a bounded native session. Only recursive security review is suppressed;
+    the child inherits project permissions and all canonical policy hooks.
     """
     relative = runtime["plugins"].get("security-guidance@claude-plugins-official")
     if relative is None:
+        return [], False
+    session = str(event.get("session_id", "unknown"))
+    if re.fullmatch(r"[a-zA-Z0-9_-]+", session) and (root / "tmp/codex-security/reviewer-sessions" / session).is_file():
         return [], False
     contexts = []
     paths = tuple(dict.fromkeys(path for item in events for path in file_paths(item, root)))
@@ -251,26 +256,64 @@ def security_guidance(root, runtime, event, events, audit):
     instructions += "\n\nReview only this session's changed files and relevant callers: " + json.dumps(list(tracked))
     instructions += "\nThe session started at Git HEAD " + baseline["head"] + ". Compare against that revision, including working-tree edits and deleted files; commits made during this session remain in scope. The initial snapshot excludes pre-existing changes that stayed unchanged."
     instructions += "\nRead the files and git diff. Do not edit, commit, install dependencies, run tests or delegate. Return only substantive exploitable findings after self-refutation, with file and line evidence. Empty findings means no substantiated vulnerability. Do not report cosmetic issues.\n"
-    report = state / "review.json"
-    command = ["codex", "exec", "--ephemeral", "--disable", "hooks", "--sandbox", "read-only", "-c", 'approval_policy="never"', "--json", "--output-schema", str(root / ".codex/agent-standards/security-review.schema.json"), "-o", str(report), "-"]
-    started = time.monotonic()
-    with (state / "review.log").open("w") as log:
-        process = subprocess.Popen(command, cwd=root, stdin=subprocess.PIPE, stdout=log, stderr=subprocess.STDOUT, text=True, start_new_session=True)
-        try:
-            process.communicate(instructions, timeout=300)
-        except subprocess.TimeoutExpired:
-            os.killpg(process.pid, signal.SIGKILL)
-            process.communicate()
-            raise TimeoutError(f"native security review exceeded 300s; inspect {state / 'review.log'}")
-    audit("security.review.finished", status=process.returncode, duration_seconds=time.monotonic()-started)
-    if process.returncode or not report.is_file():
-        raise RuntimeError(f"native security review failed; inspect {state / 'review.log'}")
-    result = json.loads(report.read_text())
+    if review is None:
+        raise RuntimeError("native review collaborator was not supplied")
+    result = review(state, instructions, fingerprint)
+    fresh = repository_snapshot(root)
+    if any(fresh["files"].get(str(pathlib.Path(path).relative_to(root)), "deleted") != version for path, version in tracked.items()):
+        return contexts + ["Files changed while the native security review ran. Its result is stale; review the current content before completing."], True
     findings = result["findings"]
     write_json(reviewed, {"fingerprint": fingerprint, "findings": findings})
     if findings:
         contexts.append(security_findings(findings, fingerprint, state))
     return contexts, bool(findings)
+
+
+def native_review(root, state, instructions, audit):
+    """Create a marked native session before starting its model turn.
+
+    The marker has exactly the session lifetime and only disables this adapter's
+    recursive security review. Project denials and other lifecycle hooks remain.
+    """
+    from rpc_client import AppServer
+    marker = None
+    started = time.monotonic()
+    with (state / "review.log").open("w") as log, (state / "review.stderr.log").open("w") as errors:
+        try:
+            with AppServer(root, errors) as server:
+                thread = server.request("thread/start", {"cwd": str(root), "ephemeral": True, "approvalPolicy": "never"})["thread"]["id"]
+                uuid.UUID(thread)
+                marker = root / "tmp/codex-security/reviewer-sessions" / thread
+                marker.parent.mkdir(parents=True, exist_ok=True)
+                write_json(marker, {"owner_pid": os.getpid()})
+                audit("security.review.started", reviewer_session=thread)
+                pending = []
+                server.request("turn/start", {"threadId": thread, "input": [{"type": "text", "text": instructions, "text_elements": []}],
+                               "outputSchema": json.loads((root / ".codex/agent-standards/security-review.schema.json").read_text())}, notifications=pending)
+                deadline = time.monotonic() + 300
+                answer = None
+                while time.monotonic() < deadline:
+                    message = pending.pop(0) if pending else server.receive(max(0, deadline-time.monotonic()))
+                    if "id" in message and "method" in message:
+                        server.send({"id": message["id"], "error": {"code": -32601, "message": "review cannot approve or request human input"}})
+                        continue
+                    method = message.get("method")
+                    params = message.get("params", {})
+                    log.write(json.dumps({"event": method}) + "\n");log.flush()
+                    if method == "item/completed" and params.get("item", {}).get("type") == "agentMessage":
+                        answer = params["item"]["text"]
+                    if method == "turn/completed":
+                        turn = params["turn"]
+                        if turn["status"] != "completed" or answer is None:
+                            raise RuntimeError(f"native security review failed: {turn.get('error') or turn['status']}")
+                        result = json.loads(answer)
+                        write_json(state / "review.json", result)
+                        audit("security.review.finished", status=0, reviewer_session=thread, duration_seconds=time.monotonic()-started)
+                        return result
+                raise TimeoutError("native security review exceeded 300s")
+        finally:
+            if marker is not None:
+                marker.unlink(missing_ok=True)
 
 
 def security_findings(findings, fingerprint, state):
@@ -308,7 +351,7 @@ def repository_snapshot(root):
     return {"head": head.stdout.strip() if head.returncode == 0 else "unborn (all files are new)", "files": files}
 
 
-def dispatch(root, runtime, event, audit):
+def dispatch(root, runtime, event, audit, review=None):
     event = dict(event)
     event_name = event.get("hook_event_name", "")
     if event_name == "PostCompact":
@@ -317,7 +360,7 @@ def dispatch(root, runtime, event, audit):
     events = tool_events(event, root)
     contexts = reminders(root, runtime, event, events) if event_name in {"PreToolUse", "PostToolUse", "SessionStart"} else []
     decision = None
-    security_contexts, block = security_guidance(root, runtime, event, events, audit)
+    security_contexts, block = security_guidance(root, runtime, event, events, audit, review)
     contexts.extend(security_contexts)
     for origin, definitions in runtime["hooks"].items():
         plugin_root = root / runtime["plugins"][origin] if origin != "project" else None
@@ -394,8 +437,28 @@ def main():
             runtime = json.loads((root / ".codex/agent-standards/runtime.json").read_text())
             with (log_dir / "dispatch.lock").open("a") as lock:
                 fcntl.flock(lock, fcntl.LOCK_EX)
-                result = dispatch(root, runtime, event, audit)
-            audit("hook.dispatch.finished", hook_event=event.get("hook_event_name"), tool=event.get("tool_name"))
+                with (log_dir / "security-review.lock").open("a") as review_lock:
+                    review_held = False
+                    def review(state, instructions, fingerprint):
+                        nonlocal review_held
+                        fcntl.flock(lock, fcntl.LOCK_UN)
+                        try:
+                            fcntl.flock(review_lock, fcntl.LOCK_EX)
+                            review_held = True
+                            cached = state / "reviewed.json"
+                            if cached.is_file():
+                                previous = json.loads(cached.read_text())
+                                if previous.get("fingerprint") == fingerprint:
+                                    return previous
+                            return native_review(root, state, instructions, audit)
+                        finally:
+                            fcntl.flock(lock, fcntl.LOCK_EX)
+                    try:
+                        result = dispatch(root, runtime, event, audit, review)
+                    finally:
+                        if review_held:
+                            fcntl.flock(review_lock, fcntl.LOCK_UN)
+            audit("hook.dispatch.finished", hook_event=event.get("hook_event_name"), tool=event.get("tool_name"), session_id=event.get("session_id"))
             print(json.dumps(result))
         except Exception as error:
             import traceback
