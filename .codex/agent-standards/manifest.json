@@ -183,7 +183,7 @@
     },
     "AGENTS.override.md": {
       "source": "AGENTS.md and unconditional .claude/rules",
-      "sha256": "8a6aeaa4ea1efe550ca0a0a13b1d917f658d0ec4b5aacac6dcd0c46b56f40427",
+      "sha256": "ebf897e87354066bab7f5ded3bbbbf8812a683605ad4e195fa39a730cbc67650",
       "link": false,
       "executable": false
     }

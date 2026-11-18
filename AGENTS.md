@@ -278,6 +278,12 @@ Passing tests do not replace review, and agent review does not replace any requi
 
 ## Git
 
+This workflow applies to every owned project, independently of the active tooling
+roster. It supersedes older instructions requiring feature branches or reserving
+ordinary fast-forward landing and pushing for a human. Here `main` means the
+repository's actual default branch when it has a legacy name such as `master`;
+never create a branch merely to satisfy the name.
+
 Work on `main`. Do not create or work on another branch unless explicitly instructed by the user. Work is complete only when its verified, reviewed commits have landed on `main` and been pushed to GitHub. A local commit, worktree result or open PR is not completion. Report any landing or push blocker explicitly.
 
 Protect other agents' work. The shared checkout stays on its default branch; isolated work uses detached worktrees instead of feature branches.
