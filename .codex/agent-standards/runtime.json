@@ -4,7 +4,6 @@
     "scripting@npomfret": ".codex/agent-standards/plugins/scripting",
     "task-files@npomfret": ".codex/agent-standards/plugins/task-files",
     "teamcity@npomfret": ".codex/agent-standards/plugins/teamcity",
-    "typesafe@typesafe-ai": ".codex/agent-standards/plugins/typesafe",
     "webstorm@npomfret": ".codex/agent-standards/plugins/webstorm"
   },
   "hooks": {

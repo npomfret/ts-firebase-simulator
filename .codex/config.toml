@@ -2,7 +2,7 @@
 # `sync.py apply`; the project's own lever is .codex/rules/project.rules.
 approval_policy = "on-request"
 sandbox_mode = "danger-full-access"
-project_doc_max_bytes = 60390
+project_doc_max_bytes = 32768
 
 [mcp_servers."gitnexus"]
 command = "npx"
