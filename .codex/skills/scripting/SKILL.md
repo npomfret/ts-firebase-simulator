@@ -11,6 +11,8 @@ Keep command-line tooling predictable for people, agents and CI.
 
 - Use shell for glue; use the project's scripting language, or Python's standard library, for data processing and substantial decisions. Keep one scripting language besides shell.
 - Keep maintained scripts in `scripts/`, beside the part they serve when appropriate. Register runnable scripts in the project's command list and name agent entry points in `AGENTS.md`.
+- Keep uncommitted ad hoc scripts in the gitignored root `tmp/ad-hoc-scripts/`, with descriptive names, purpose and usage. Inspect that directory and the maintained script catalogue before creating new automation. Reuse or extend existing operations.
+- Common tasks such as TeamCity queries, releases and audit-log collection must have maintained, checked-in scripts or named project command targets. Where package scripts are used, keep substantial implementation in script files. Promote recurring ad hoc work into the maintained tooling.
 - Resolve paths from the script's own location. Generated output belongs under ignored paths. A committed script needs no per-script approval rule.
 
 ### Interface
@@ -21,9 +23,11 @@ Keep command-line tooling predictable for people, agents and CI.
 
 ### Output and failures
 
-- Print the log path first. Keep the console to usage, concise progress, actionable warnings and the final result; send subprocess detail to the log.
+- Operational scripts print only their audit-log file path to stdout. Return the exit status to the calling process. Write progress, results, warnings, errors and subprocess output to the audit-log file. Do not stream operational detail to stdout or stderr.
+- This keeps large output out of agent context and conserves token quota. Agents inspect the audit-log file with targeted searches and bounded excerpts, rather than reading the entire output into the conversation.
+- Operational scripts, including ad hoc scripts, write an audit-log file under the project's root `tmp/logs/`. Use the same auditing contract as the application, with timestamp, severity, fixed event label and structured JSON fields on one line. Preserve relevant subprocess output with the collected evidence.
 - Record stage commands, start/end, duration and status. Distinguish nonzero exits, timeouts and signals. Retain original errors, stacks and relevant output so the summary explains the failure and points to its evidence.
-- Do not suppress failing checks or move verbose detail onto the console. Use the project's structured logger for diagnostic records; CLI usage/progress/summary may print directly.
+- Do not suppress failing checks or move detail onto the console. Use the project's structured logger for audit records. Explicit `--help` output and invalid-usage help remain CLI interface output as specified above.
 
 ### Shell
 

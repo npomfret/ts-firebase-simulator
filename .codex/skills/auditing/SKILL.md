@@ -17,7 +17,7 @@ Use structured logs that explain events, actions and state changes to both peopl
 ### Logger and errors
 
 - Construct the project-owned logger at the composition root and inject it. Its interface enforces fixed labels, structured fields and error objects where the language permits. Child loggers carry shared request/job context.
-- Application events and script diagnostics use that logger and a log file. Direct console output is reserved for CLI usage, the log path, concise progress and the final summary described by the scripting standard.
+- Application events and script diagnostics use that logger and an audit-log file. Operational scripts print only the audit-log path to stdout and return an exit status. Progress, results and diagnostics belong in the audit log. Explicit CLI help remains interface output under the scripting standard.
 - Log an error once where it is handled, preserving its type, stack, cause and other useful properties. Expected validation rejections may be warnings without a stack. Let unhandled errors reach the boundary that deals with them.
 - Tests assert event labels and fields, not formatted output. Preserve checks that prevent application code bypassing the logger.
 
