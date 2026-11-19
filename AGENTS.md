@@ -18,8 +18,9 @@ other projects are not evidenced.
   same suite against the stub, the Firebase emulator and real Firebase — see
   `CONTRIBUTING.md`. Where a stub and the real service disagree, the defect is
   in the stub, not in the test.
-- Never publish. `release:patch`, `release:minor` and `release:major` each run
-  `npm publish`, and those are the user's to run. See `RELEASING.md`.
+- Publish when the task calls for it, and say so in your report.
+  `release:patch`, `release:minor` and `release:major` each run `npm publish`.
+  See `RELEASING.md`.
 - `examples/` is documentation that compiles. A change to the API it
   demonstrates changes it too.
 
