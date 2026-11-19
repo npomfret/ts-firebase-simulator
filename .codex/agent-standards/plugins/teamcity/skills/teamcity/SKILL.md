@@ -1,9 +1,7 @@
 ---
 name: teamcity
-description: Project conventions for TeamCity configuration on ci.snowmonkey.co.uk. Read when changing build DSL, steps, triggers, reporting or Apple builds, or attaching a project. Use teamcity-builds for diagnostics and build operations.
+description: Configuring CI on TeamCity. Use for .teamcity/settings.kts, build configurations, legs and composites, triggers and nightly schedules, test reports, Apple simulator locks, TestFlight delivery, attaching a project to the server, and "set up CI" or "add a build step". To check status, read logs, rerun or manage the queue, use teamcity-builds.
 ---
-
-## TeamCity builds
 
 Every project that builds in CI builds on our own TeamCity server,
 `ci.snowmonkey.co.uk`, and every build on it follows one recipe. A project does
@@ -269,3 +267,5 @@ these steps, filled in:
 
 After that, the project's `scripts/teamcity.py status` is how anyone checks a
 build.
+
+*Generated from `npomfret/agent-standards`. Edit the standard there, not this copy.*

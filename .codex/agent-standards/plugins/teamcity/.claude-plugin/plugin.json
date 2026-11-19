@@ -1,7 +1,7 @@
 {
   "name": "teamcity",
   "description": "TeamCity standards, diagnostics and build operations for the shared ci.snowmonkey.co.uk server",
-  "version": "1.0.21",
+  "version": "1.0.22",
   "author": {
     "name": "npomfret"
   }
