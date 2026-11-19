@@ -97,7 +97,7 @@ plus that, for example `EnergyStats_UnitTests`. Use only these names:
 | `Deploy (Production)` | `DeployProduction` | a deployment configuration, one per target |
 
 Never `Tests`, `Unit`, `Checks`, `Verify`, `Verdict` or `Build & Unit`. If a
-new kind of leg is needed, ask the user for its name and add it to this table
+new kind of leg is needed, choose a name consistent with the table and add it to this table
 in agent-standards first.
 
 To rename an existing configuration, keep its history by putting its current
