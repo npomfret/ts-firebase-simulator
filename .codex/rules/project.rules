@@ -15,20 +15,11 @@ prefix_rule(
 
 # ---- git history rewriting: confirm before it happens ----
 # Only the forms that throw work away. Plain `git reset` and `git reset <path>`
-# unstage and touch no file, which is ordinary work. As with --amend below, the
-# flag is matched only directly after "reset".
+# unstage and touch no file, which is ordinary work.
 prefix_rule(
     pattern = ["git", "reset", ["--hard", "--merge", "--keep"]],
     decision = "prompt",
     justification = "These forms of reset discard uncommitted work; confirm manually.",
-)
-
-# Only matches --amend directly after "commit". prefix_rule has no way to match
-# a flag at an arbitrary position, so `git commit -m msg --amend` is not caught.
-prefix_rule(
-    pattern = ["git", "commit", "--amend"],
-    decision = "prompt",
-    justification = "amend rewrites the previous commit; confirm manually.",
 )
 
 # ---- gh: GitHub CLI ----
