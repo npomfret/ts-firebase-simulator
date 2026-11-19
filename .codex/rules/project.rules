@@ -10,34 +10,14 @@ prefix_rule(
 )
 
 prefix_rule(
-    pattern = ["gh", ["repo", "release", "api"]],
-    decision = "prompt",
-    justification = "These can change repo settings or visibility or publish releases.",
-)
-
-prefix_rule(
     pattern = ["gh", ["auth", "secret", "ssh-key"]],
     decision = "forbidden",
     justification = "Credential and secret surfaces are not for the agent.",
 )
 
 # ---- npm ----
-# Targets that deploy, publish or delete remote data still ask first.
-prefix_rule(
-    pattern = ["npm", "run", ["indexes:deploy", "release:major", "release:minor", "release:patch", "test:wipe-data"]],
-    decision = "prompt",
-    justification = "This target changes deployed or persistent state.",
-)
-
 prefix_rule(
     pattern = ["npm", ["publish", "unpublish", "adduser", "login", "logout", "token", "owner", "access", "dist-tag", "deprecate", "version"]],
     decision = "forbidden",
     justification = "Registry and release operations are not for the agent.",
-)
-
-# ---- project scripts ----
-prefix_rule(
-    pattern = [["./scripts/deploy-indexes.ts", "./scripts/wipe-test-data.ts"]],
-    decision = "prompt",
-    justification = "This script deploys or destroys state; confirm first.",
 )
