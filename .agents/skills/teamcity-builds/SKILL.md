@@ -1,6 +1,6 @@
 ---
 name: teamcity-builds
-description: Inspecting and operating TeamCity builds. Use when asked whether CI is green, about a recent or running build, a failed build or test, build-chain legs, logs, artifacts, the queue, or which commit TeamCity tested, and when triggering, rerunning or cancelling builds or reordering the queue to complete the current task. Not for editing build configuration, which is teamcity.
+description: Inspecting and operating TeamCity builds. Use when asked whether CI is green or why it is red, about a recent or running build, a failed build or test, build-chain legs, logs, artifacts, the queue, or which commit TeamCity tested, and when triggering, rerunning or cancelling builds or reordering the queue to complete the current task. Not for editing build configuration, which is teamcity.
 ---
 
 # TeamCity Builds
