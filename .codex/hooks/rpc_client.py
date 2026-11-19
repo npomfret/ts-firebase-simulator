@@ -163,15 +163,11 @@ def inspect(server: AppServer, project: pathlib.Path, trust: bool, dry_run: bool
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    selection = parser.add_mutually_exclusive_group(required=True)
-    selection.add_argument("--project", type=pathlib.Path, action="append", help="Checkout to inspect; repeat for a fleet")
-    selection.add_argument("--fleet", action="store_true", help="Inspect every project in projects.txt")
+    parser.add_argument("--project", type=pathlib.Path, action="append", required=True, help="Checkout to inspect; repeat for several")
     parser.add_argument("--trust-reviewed-hooks", action="store_true", help="Record native trust for reviewed generated hook declarations")
     parser.add_argument("--dry-run", action="store_true", help="Report trust handshakes without recording them")
     args = parser.parse_args()
     root = pathlib.Path(__file__).resolve().parents[1]
-    if args.fleet:
-        args.project = [(root / line.strip()).resolve() for line in (root / "projects.txt").read_text().splitlines() if line.strip() and not line.lstrip().startswith("#")]
     folder = root / "tmp/logs"
     folder.mkdir(parents=True, exist_ok=True)
     stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%S%f")
