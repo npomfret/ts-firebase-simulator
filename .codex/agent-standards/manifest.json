@@ -219,13 +219,13 @@
     },
     ".codex/hooks.json": {
       "source": "templates/codex-hooks.py",
-      "sha256": "5d4e19350bf54e98f9ceaf39a22d23358b111156efcd8acb7b0ef4e1074f0534",
+      "sha256": "83cc2fde4dc847cec1dc2cafa095bc28cd854ce391a125c823327b82d33186f7",
       "link": false,
       "executable": false
     },
     ".codex/hooks/agent_standards.py": {
       "source": "templates/codex-hooks.py",
-      "sha256": "8e68033b340cf77ed5d105e610a0b8d5afbfb30752a04a67222f6f5abb74c8f3",
+      "sha256": "b5a9d53b58deb3ee7268151ef2ec8bca2c4c691385e42ae6a1e0c7f8d112c3d7",
       "link": false,
       "executable": false
     },
