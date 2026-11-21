@@ -88,7 +88,10 @@ fun logged(log: String, command: String) =
 // Mac other projects share; and the integration leg talks to a live Firebase
 // project that can change under us entirely. A run that goes red on an
 // untouched tree names that as the cause, which a push-triggered build cannot.
-fun BuildType.onPushAndNightly(atMinute: Int) {
+//
+// No composite pulls the two legs together, so each carries the same midnight Europe/London
+// schedule as every project on the server (agent-standards), with a clean checkout enforced.
+fun BuildType.onPushAndNightly() {
     triggers {
         vcs {
             branchFilter = "+:<default>"
@@ -96,13 +99,15 @@ fun BuildType.onPushAndNightly(atMinute: Int) {
         }
         schedule {
             schedulingPolicy = daily {
-                hour = 3
-                minute = atMinute
+                hour = 0
+                minute = 0
                 timezone = "Europe/London"
             }
             branchFilter = "+:<default>"
             triggerBuild = always()
             withPendingChangesOnly = false
+            enforceCleanCheckout = true
+            enforceCleanCheckoutForDependencies = true
         }
     }
 }
@@ -141,7 +146,7 @@ val buildAndUnit = BuildType {
     failureConditions {
         executionTimeoutMin = 15
     }
-    onPushAndNightly(atMinute = 30)
+    onPushAndNightly()
 }
 
 val integration = BuildType {
@@ -197,7 +202,7 @@ val integration = BuildType {
         // for a slow day on the API rather than for the suite growing fourfold.
         executionTimeoutMin = 20
     }
-    onPushAndNightly(atMinute = 45)
+    onPushAndNightly()
 }
 
 project {
