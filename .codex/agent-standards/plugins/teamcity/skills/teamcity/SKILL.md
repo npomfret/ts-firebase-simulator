@@ -161,7 +161,7 @@ triggers {
         triggerRules = onlyWhatCanChangeTheVerdict
     }
     schedule {
-        schedulingPolicy = daily { hour = 0; minute = 0; timezone = "Europe/London" }
+        schedulingPolicy = daily { hour = 22; minute = 0; timezone = "Europe/London" }
         branchFilter = "+:<default>"
         triggerBuild = always()
         withPendingChangesOnly = false
@@ -173,12 +173,12 @@ triggers {
 
 - **Both Markdown rules are required.** `**/*.md` does not match a file at the
   repository root.
-- **Every TeamCity project queues a nightly at midnight Europe/London.** A green build proves the code passed against
+- **Every TeamCity project queues a nightly at 22:00 Europe/London.** A green build proves the code passed against
   that day's dependencies, toolchain and date. Without
   `withPendingChangesOnly = false` the nightly never runs on an unchanged repo.
   Without the two `enforceCleanCheckout` lines, the composite reuses yesterday's
   legs and goes green having run nothing.
-- **Queue together at midnight.** All projects use the same midnight schedule.
+- **Queue together at 22:00.** All projects use the same 22:00 schedule.
   Builds start as agents and shared resource locks become available.
 - **A delivery configuration follows the composite.** A nightly then means a
   nightly delivery. Decide that deliberately (see the Apple doc).

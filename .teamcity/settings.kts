@@ -89,7 +89,7 @@ fun logged(log: String, command: String) =
 // project that can change under us entirely. A run that goes red on an
 // untouched tree names that as the cause, which a push-triggered build cannot.
 //
-// No composite pulls the two legs together, so each carries the same midnight Europe/London
+// No composite pulls the two legs together, so each carries the same 22:00 Europe/London
 // schedule as every project on the server (agent-standards), with a clean checkout enforced.
 fun BuildType.onPushAndNightly() {
     triggers {
@@ -99,7 +99,7 @@ fun BuildType.onPushAndNightly() {
         }
         schedule {
             schedulingPolicy = daily {
-                hour = 0
+                hour = 22
                 minute = 0
                 timezone = "Europe/London"
             }
