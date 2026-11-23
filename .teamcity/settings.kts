@@ -112,6 +112,25 @@ fun BuildType.onPushAndNightly() {
     }
 }
 
+val compile = BuildType {
+    id("Compile")
+    name = "Compile"
+    description = "Type-check source, tests and examples and build library bundles; no tests or Firebase access."
+    onTheMac("ts-firebase-simulator-compile")
+    artifactRules = "+:logs/** => logs\n+:dist/** => dist.zip"
+    steps {
+        script {
+            name = "install"
+            scriptContent = logged("install", "node --version && npm --version && npm ci")
+        }
+        script {
+            name = "compile"
+            scriptContent = logged("compile", "npx --no-install tsc -p tsconfig.compile.json --noEmit && npm run build")
+        }
+    }
+    failureConditions { executionTimeoutMin = 15 }
+}
+
 val buildAndUnit = BuildType {
     id("BuildAndUnit")
     name = "Build & Unit"
@@ -119,6 +138,9 @@ val buildAndUnit = BuildType {
         "outside the checkout, so it cannot go red for a reason that is not ours."
     onTheMac("ts-firebase-simulator-build-and-unit")
     keepsWhatVitestSaid("unit.xml")
+    dependencies {
+        snapshot(compile) { onDependencyFailure = FailureAction.FAIL_TO_START }
+    }
     // What the bundle step built, to look inside when a consumer reports a broken build.
     artifactRules += "\n+:dist/** => dist.zip"
     steps {
@@ -218,6 +240,7 @@ project {
         }
     }
 
+    buildType(compile)
     buildType(buildAndUnit)
     buildType(integration)
 }

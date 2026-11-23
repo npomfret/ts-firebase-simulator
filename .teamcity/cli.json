@@ -1,6 +1,7 @@
 {
   "project": "TsFirebaseSimulator",
   "buildTypes": [
+    "Compile",
     "BuildAndUnit",
     "Integration"
   ],
