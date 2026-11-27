@@ -9,12 +9,23 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 
+def _require_build_identity(build_id: int, result: dict, *, sent: bool) -> None:
+    returned_id = result.get("id")
+    if str(returned_id) != str(build_id):
+        outcome = "The operation was sent; do not retry it." if sent else "No operation sent."
+        raise SystemExit(
+            f"Requested build {build_id} resolved to {returned_id!r}. {outcome} "
+            "Inspect the current queue before further operations."
+        )
+
+
 @dataclass(frozen=True)
 class BuildAction:
     method: str
     path: str
     body: str
     description: str
+    expected_build_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -77,7 +88,10 @@ class TeamCityClient:
         return self.request("GET", path, None)
 
     def send(self, action: BuildAction) -> dict:
-        return self.request(action.method, action.path, action.body)
+        result = self.request(action.method, action.path, action.body)
+        if action.expected_build_id is not None:
+            _require_build_identity(action.expected_build_id, result, sent=True)
+        return result
 
 
 @dataclass(frozen=True)
@@ -85,6 +99,11 @@ class BuildOperations:
     read: Callable[[str], dict]
     project: str
     composite: str | None
+
+    def _read_build(self, build_id: int, path: str) -> dict:
+        build = self.read(path)
+        _require_build_identity(build_id, build, sent=False)
+        return build
 
     def trigger(self, leg: str | None, branch: str | None, comment: str) -> BuildAction:
         name = leg or self.composite
@@ -102,7 +121,8 @@ class BuildOperations:
         return BuildAction("POST", "app/rest/buildQueue", json.dumps(payload), f"Queue {matches[0]}")
 
     def rerun(self, build_id: int, comment: str) -> BuildAction:
-        source = self.read(
+        source = self._read_build(
+            build_id,
             f"app/rest/builds/id:{build_id}?fields=id,buildTypeId,branchName,"
             "revisions(revision(version,vcsBranchName,vcs-root-instance(id)))"
         )
@@ -123,7 +143,7 @@ class BuildOperations:
 
     def cancel(self, build_id: int, comment: str) -> BuildAction | None:
         # This endpoint also resolves builds that have started since being queued.
-        build = self.read(f"app/rest/buildQueue/id:{build_id}?fields=id,state,buildTypeId")
+        build = self._read_build(build_id, f"app/rest/buildQueue/id:{build_id}?fields=id,state,buildTypeId")
         state = build.get("state")
         if state == "finished":
             return None
@@ -133,16 +153,16 @@ class BuildOperations:
         return BuildAction(
             "POST", f"app/rest/{collection}/id:{build_id}",
             json.dumps({"comment": comment, "readdIntoQueue": False}),
-            f"Cancel {state} build {build_id}",
+            f"Cancel {state} build {build_id}", expected_build_id=build_id,
         )
 
     def move(self, build_id: int, position: str) -> BuildAction:
         if position not in ("first", "last"):
             raise ValueError("Queue position must be first or last.")
-        build = self.read(f"app/rest/buildQueue/id:{build_id}?fields=id,state")
+        build = self._read_build(build_id, f"app/rest/buildQueue/id:{build_id}?fields=id,state")
         if build.get("state") != "queued":
             raise SystemExit(f"Build {build_id} is not queued; nothing moved.")
         return BuildAction(
             "PUT", f"app/rest/buildQueue/order/{position}", json.dumps({"id": build_id}),
-            f"Move build {build_id} to {position} in the server queue",
+            f"Move build {build_id} to {position} in the server queue", expected_build_id=build_id,
         )

@@ -87,7 +87,9 @@ plus that, for example `EnergyStats_UnitTests`. Use only these names:
 
 | Name | Id | What it runs |
 |---|---|---|
-| `Static Checks` | `StaticChecks` | lint, format, typecheck, compile and bundle. No tests. |
+| `Compile` | `Compile` | Compile, link, type-check and bundle every maintained application, package, test target and build tool. No test execution, lint or dependency audit. |
+| `Compile (<product>)` | `Compile<Product>` | Compile an independently verified product, such as an optional admin tool, without changing the application's shipping gates. |
+| `Static Checks` | `StaticChecks` | Static policy checks, lint and dependency audit. No test execution. |
 | `Unit Tests` | `UnitTests` | the unit suite, and nothing else |
 | `Integration Tests` | `IntegrationTests` | in-process integration suites, with no Docker or live services |
 | `Browser Tests` | `BrowserTests` | Playwright or browser-mode suites against fixtures |
@@ -99,6 +101,18 @@ plus that, for example `EnergyStats_UnitTests`. Use only these names:
 Never `Tests`, `Unit`, `Checks`, `Verify`, `Verdict` or `Build & Unit`. If a
 new kind of leg is needed, choose a name consistent with the table and add it to this table
 in agent-standards first.
+
+Every project that performs compilation in any CI leg has a standalone `Compile`
+configuration, runnable without starting a test or delivery build. Independently
+verified products may have their own named Compile configurations; together they
+cover the whole repository without changing which products gate shipping. Include each in
+the verification composite, or as a snapshot dependency of the existing entry
+leg when the project has no composite. Compile all maintained workspaces and
+tooling, production bundles, test sources and native test bundles without running
+their suites. Apple projects cover their shipped platforms and SDKs in Debug and
+Release, including extensions and shared packages. Test builds may still compile
+as a prerequisite, but they are not the only compiler coverage. Reuse the
+project's existing build commands and preserve existing build UUIDs when renaming.
 
 To rename an existing configuration, keep its history by putting its current
 `uuid` in the DSL, read with `python3 scripts/teamcity.py settings --json`:

@@ -56,6 +56,14 @@ triggers its dependencies; choose a single leg when that is the intended scope.
 After an operation fails or times out, inspect the build and queue before
 retrying: a lost response does not prove the server rejected the change.
 
+Rerun, cancel and move require the lookup's returned ID to match the requested
+build, including in dry-run mode. A merged queue item may resolve to a replacement;
+inspect the current queue and select its actual ID rather than acting through an
+old locator. Cancel and move also check the mutation receipt. A receipt mismatch
+means the operation was already sent: stop further queue mutations, retain the
+receipt and inspect the queue. Do not blindly retry or automatically undo it.
+The lookup guard is not an atomic server condition.
+
 `settings` is the one to reach for before moving a UI-owned project into a
 Kotlin DSL, and again afterwards. Versioned settings are authoritative — a
 configuration the DSL omits or misstates is one TeamCity deletes or rewrites —

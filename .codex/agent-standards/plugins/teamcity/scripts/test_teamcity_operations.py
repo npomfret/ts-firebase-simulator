@@ -23,6 +23,7 @@ def test_trigger_resolves_project_configuration_and_defaults_to_composite():
 
     operations = BuildOperations(read, "Example", "AllChecks")
     action = operations.trigger(None, "feature/test", 'Reason with "quotes"\nand a newline')
+    assert action.expected_build_id is None
     assert reads == ["app/rest/projects/id:Example?fields=buildTypes(buildType(id))"]
     assert (action.method, action.path) == ("POST", "app/rest/buildQueue")
     assert json.loads(action.body) == {
@@ -52,9 +53,10 @@ def test_rerun_pins_the_recorded_branch_and_every_vcs_revision():
         {"version": "abc123", "vcsBranchName": "refs/heads/main", "vcs-root-instance": {"id": "17"}},
         {"version": "def456", "vcsBranchName": "refs/heads/main", "vcs-root-instance": {"id": "18"}},
     ]
-    source = {"buildTypeId": "Example_Checks", "branchName": "main", "revisions": {"revision": revisions}}
+    source = {"id": 42, "buildTypeId": "Example_Checks", "branchName": "main", "revisions": {"revision": revisions}}
     operations = BuildOperations(lambda _: source, "Example", "AllChecks")
     action = operations.rerun(42, "Retry regression")
+    assert action.expected_build_id is None
     body = json.loads(action.body)
     assert (action.method, action.path) == ("POST", "app/rest/buildQueue")
     assert body["buildType"] == {"id": "Example_Checks"}
@@ -64,36 +66,79 @@ def test_rerun_pins_the_recorded_branch_and_every_vcs_revision():
 
 
 def test_rerun_without_recorded_revisions_refuses_instead_of_building_latest():
-    operations = BuildOperations(lambda _: {"buildTypeId": "Example_Checks", "revisions": {}}, "Example", None)
+    operations = BuildOperations(lambda _: {"id": 42, "buildTypeId": "Example_Checks", "revisions": {}}, "Example", None)
     with pytest.raises(SystemExit, match="no recorded VCS revisions"):
         operations.rerun(42, "Retry")
 
 
 @pytest.mark.parametrize("state,collection", [("queued", "buildQueue"), ("running", "builds")])
-def test_cancel_retains_history_and_does_not_requeue(state, collection):
-    operations = BuildOperations(lambda _: {"state": state}, "Example", None)
+@pytest.mark.parametrize("returned_id", [42, "42"])
+def test_cancel_retains_history_and_does_not_requeue(state, collection, returned_id):
+    operations = BuildOperations(lambda _: {"id": returned_id, "state": state}, "Example", None)
     action = operations.cancel(42, "Superseded")
+    assert action.expected_build_id == 42
     assert (action.method, action.path) == ("POST", f"app/rest/{collection}/id:42")
     assert json.loads(action.body) == {"comment": "Superseded", "readdIntoQueue": False}
 
 
 def test_cancel_finished_build_does_nothing():
-    operations = BuildOperations(lambda _: {"state": "finished"}, "Example", None)
+    operations = BuildOperations(lambda _: {"id": 42, "state": "finished"}, "Example", None)
     assert operations.cancel(42, "Already done") is None
 
 
 @pytest.mark.parametrize("position", ["first", "last"])
 def test_move_changes_only_the_selected_build(position):
-    operations = BuildOperations(lambda _: {"state": "queued"}, "Example", None)
+    operations = BuildOperations(lambda _: {"id": 42, "state": "queued"}, "Example", None)
     action = operations.move(42, position)
+    assert action.expected_build_id == 42
     assert (action.method, action.path) == ("PUT", f"app/rest/buildQueue/order/{position}")
     assert json.loads(action.body) == {"id": 42}
 
 
 def test_move_rejects_a_build_that_has_started():
-    operations = BuildOperations(lambda _: {"state": "running"}, "Example", None)
+    operations = BuildOperations(lambda _: {"id": 42, "state": "running"}, "Example", None)
     with pytest.raises(SystemExit, match="not queued"):
         operations.move(42, "first")
+
+
+@pytest.mark.parametrize("operation,state", [
+    ("rerun", "finished"), ("cancel", "queued"), ("cancel", "running"),
+    ("cancel", "finished"), ("move", "queued"),
+])
+@pytest.mark.parametrize("returned_id", [43, "43", None])
+def test_id_based_operations_refuse_replaced_or_missing_identity(operation, state, returned_id):
+    source = {"state": state, "buildTypeId": "Example_Checks",
+              "revisions": {"revision": [{"version": "abc123"}]}}
+    if returned_id is not None:
+        source["id"] = returned_id
+    operations = BuildOperations(lambda _: source, "Example", None)
+    with pytest.raises(SystemExit, match="Requested build 42 resolved to"):
+        if operation == "move":
+            operations.move(42, "first")
+        else:
+            getattr(operations, operation)(42, "Check identity")
+
+
+@pytest.mark.parametrize("operation", ["cancel", "move"])
+@pytest.mark.parametrize("returned_id", [42, "42", 43, "43", None])
+def test_mutation_receipt_must_keep_the_requested_identity_without_retry(operation, returned_id):
+    operations = BuildOperations(lambda _: {"id": 42, "state": "queued"}, "Example", None)
+    action = operations.move(42, "first") if operation == "move" else operations.cancel(42, "Superseded")
+    result = {} if returned_id is None else {"id": returned_id}
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0, json.dumps(result), "")
+
+    client = TeamCityClient("host", "teamcity", "http://localhost:8111", lambda: "fake-secret",
+                            run, lambda: 0.0, lambda _: None)
+    if str(returned_id) == "42":
+        assert client.send(action) == result
+    else:
+        with pytest.raises(SystemExit, match="The operation was sent; do not retry"):
+            client.send(action)
+    assert len(calls) == 1
 
 
 @pytest.mark.parametrize("method,path,body", [

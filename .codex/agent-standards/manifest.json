@@ -105,7 +105,7 @@
     },
     ".codex/agent-standards/plugins/teamcity/.claude-plugin/plugin.json": {
       "source": "plugin:teamcity@npomfret/.claude-plugin/plugin.json",
-      "sha256": "78891fb0f41bc44498bd4f9b3fe2c1d150214543537bfa29665dcf672c570689",
+      "sha256": "ed83b0f779c724768d3511111700ed6405106b211b4904b0177131030fffe5b8",
       "link": false,
       "executable": false
     },
@@ -117,37 +117,37 @@
     },
     ".codex/agent-standards/plugins/teamcity/scripts/teamcity_operations.py": {
       "source": "plugin:teamcity@npomfret/scripts/teamcity_operations.py",
-      "sha256": "3a49f00bb71efa951b6bc5ca4fa404798b61368e52f9683232ea2a1677d00861",
+      "sha256": "b698a446710016c4d248ec6e9db54f1a8ba251503b31f91969b8124e014a9737",
       "link": false,
       "executable": false
     },
     ".codex/agent-standards/plugins/teamcity/scripts/test_teamcity_operations.py": {
       "source": "plugin:teamcity@npomfret/scripts/test_teamcity_operations.py",
-      "sha256": "183472b434575df9256950cc6bbdb4a00cf021022fa91e9088e9bef4e93ff98b",
+      "sha256": "eca6f97597bdd6069ea20fdd55ac079fd95de4e2328d2d8e039706f98bab8013",
       "link": false,
       "executable": false
     },
     ".codex/agent-standards/plugins/teamcity/skills/teamcity-builds/SKILL.md": {
       "source": "plugin:teamcity@npomfret/skills/teamcity-builds/SKILL.md",
-      "sha256": "735b594f00a0af078f3b36ce457e517bedede9f53bc3dd07d2ab65c0a212992a",
+      "sha256": "e0c41c1ea0deb7f2a5ee52d85fc0b823c0b80c2e7c9ab940e257a0bebd84ac62",
       "link": false,
       "executable": false
     },
     ".codex/agent-standards/plugins/teamcity/skills/teamcity/SKILL.md": {
       "source": "plugin:teamcity@npomfret/skills/teamcity/SKILL.md",
-      "sha256": "6c2d3720a9404b5645731e75268da90b2b52bf5a34d3b11b5f46a6d8f9ea93f2",
+      "sha256": "b6dfeab9247b0313b25b58c1d9760776ee0c6ae737dbde8a9d82c95653d587e4",
       "link": false,
       "executable": false
     },
     ".codex/agent-standards/plugins/testing/.claude-plugin/plugin.json": {
       "source": "plugin:testing@npomfret/.claude-plugin/plugin.json",
-      "sha256": "3578a70268ebd78cda8a702e18282fbd3f160c2729b02b3a929cd9b2a29b4b3e",
+      "sha256": "2d2f7d82357916acda81b37d8f19d74c74da9977d30633bf3a5ca54bedc9790c",
       "link": false,
       "executable": false
     },
     ".codex/agent-standards/plugins/testing/skills/test-design/SKILL.md": {
       "source": "plugin:testing@npomfret/skills/test-design/SKILL.md",
-      "sha256": "1c8fa8215c0d6ab418e0a5eb4e5f16ec8a89bc2d7055c6bc722759e1eae8e20f",
+      "sha256": "e75b03eea5f96770fed4c56da2729a0393793f3bebfa8d32fd909fb3496bc903",
       "link": false,
       "executable": false
     },
@@ -213,13 +213,13 @@
     },
     ".codex/agents/failure-investigator.toml": {
       "source": "plugin:coding@npomfret/agents/failure-investigator.md",
-      "sha256": "fd99c438ab5258151759726329e2b098f1f7e265432f4d1ccb6fe773630cdc9a",
+      "sha256": "ecc0b8939d5d678458acb139fb535f4cf805228bdd68391c987402a9bc41c75b",
       "link": false,
       "executable": false
     },
     ".codex/hooks.json": {
       "source": "templates/codex-hooks.py",
-      "sha256": "86edc6539183d9c1222719a3b915b6673b360879896139a3d65d23eb64fd20cb",
+      "sha256": "dac73483f5a9a45a3efc0b45a82908fc2bc8a23f77e967c468ed8bfa6c8f4303",
       "link": false,
       "executable": false
     },
